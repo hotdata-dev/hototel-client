@@ -36,7 +36,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            server_url: "http://127.0.0.1:8377".into(),
+            server_url: "https://hotusage.ai".into(),
             token: String::new(),
             user_email: String::new(),
             interval_minutes: 15,

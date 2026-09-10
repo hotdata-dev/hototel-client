@@ -54,7 +54,7 @@ First run writes `~/.hotusage/collector.json`:
 
 ```json
 {
-  "server_url": "https://hotusage.internal.example",
+  "server_url": "https://hotusage.ai",
   "token": "<shared HOTUSAGE_INGEST_TOKEN>",
   "user_email": "you@company.com",
   "interval_minutes": 15
