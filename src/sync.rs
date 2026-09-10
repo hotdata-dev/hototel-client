@@ -13,7 +13,7 @@ use std::process::Command;
 use std::time::Duration;
 
 fn config_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".hotusage")
+    crate::parsers::home_dir().join(".hotusage")
 }
 
 pub fn config_path() -> PathBuf {
@@ -55,12 +55,17 @@ fn cmd_stdout(cmd: &str, args: &[&str]) -> Option<String> {
 }
 
 pub fn hostname() -> String {
-    cmd_stdout("hostname", &[]).unwrap_or_else(|| "unknown-host".into())
+    cmd_stdout("hostname", &[])
+        .or_else(|| std::env::var("COMPUTERNAME").ok()) // Windows fallback
+        .unwrap_or_else(|| "unknown-host".into())
 }
 
 fn guess_email() -> String {
     cmd_stdout("git", &["config", "user.email"]).unwrap_or_else(|| {
-        format!("{}@{}", std::env::var("USER").unwrap_or_else(|_| "unknown".into()), hostname())
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME")) // Windows
+            .unwrap_or_else(|_| "unknown".into());
+        format!("{user}@{}", hostname())
     })
 }
 

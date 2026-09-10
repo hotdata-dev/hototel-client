@@ -12,9 +12,26 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub fn home_dir() -> PathBuf {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE")) // Windows
+        .map(PathBuf::from)
+        .unwrap_or_default()
+}
+
 fn home(p: &str) -> PathBuf {
-    let h = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(h).join(p)
+    home_dir().join(p)
+}
+
+/// OpenCode's data dir differs by platform; use the first candidate that exists.
+fn opencode_db_path() -> Option<PathBuf> {
+    let mut candidates = vec![home(".local/share/opencode/opencode.db")];
+    for var in ["LOCALAPPDATA", "APPDATA"] {
+        if let Ok(base) = std::env::var(var) {
+            candidates.push(PathBuf::from(base).join("opencode/opencode.db"));
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 fn jstr(v: &Value, key: &str) -> Option<String> {
@@ -247,10 +264,9 @@ fn load_codex_titles() -> HashMap<String, String> {
 // ---------------------------------------------------------------------------
 fn parse_opencode() -> Vec<RawSession> {
     let mut out = Vec::new();
-    let db_path = home(".local/share/opencode/opencode.db");
-    if !db_path.is_file() {
+    let Some(db_path) = opencode_db_path() else {
         return out;
-    }
+    };
     let Ok(con) = rusqlite::Connection::open_with_flags(
         &db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,

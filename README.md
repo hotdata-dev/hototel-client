@@ -1,9 +1,11 @@
 # hotusage-collector
 
-macOS menu bar agent (Rust) that collects AI coding-agent token usage and
-sends it to a central [hotusage](../hotusage) server. Sits in the top menu bar
-(⏶), parses this machine's local history every N minutes, and uploads only
-sessions that changed.
+Cross-platform background agent (Rust) that collects AI coding-agent token
+usage and sends it to a central [hotusage](../hotusage) server. Parses this
+machine's local history every N minutes and uploads only sessions that changed.
+
+Desktop indicator on macOS (top menu bar, ⏶) and Windows (taskbar tray);
+Linux runs headless as a systemd user daemon.
 
 Parsed providers:
 
@@ -20,12 +22,31 @@ collect for them.
 
 ```bash
 cargo build --release
-./target/release/hotusage-collector            # menu bar app
-./target/release/hotusage-collector --once     # headless one-shot sync
+./target/release/hotusage-collector            # macOS/Windows: tray app; Linux: daemon
+./target/release/hotusage-collector --daemon   # headless sync loop (any OS)
+./target/release/hotusage-collector --once     # one-shot sync
 ./target/release/hotusage-collector --dump     # print parsed sessions as JSON (debug)
 ```
 
-Menu: last-sync status, Sync Now, Open Dashboard, Edit Config, Quit.
+Tray menu (macOS/Windows): last-sync status, Sync Now, Open Dashboard,
+Edit Config, Quit.
+
+## Install as a continuous daemon
+
+```bash
+hotusage-collector install      # register + start now
+hotusage-collector uninstall    # stop + remove
+```
+
+| OS | Mechanism | What runs |
+|----|-----------|-----------|
+| macOS | LaunchAgent `~/Library/LaunchAgents/dev.hotdata.hotusage-collector.plist` (RunAtLoad + KeepAlive, log at /tmp/hotusage-collector.log) | menu bar app |
+| Linux | systemd user unit `~/.config/systemd/user/hotusage-collector.service` (Restart=always) | `--daemon`, no indicator |
+| Windows | `HKCU\...\CurrentVersion\Run` key (a session app, since Windows Services cannot show tray icons) | taskbar tray app |
+
+The registration points at the binary's current path - move the binary,
+re-run `install`. CI (`.github/workflows/build.yml`) builds all three OS
+targets and uploads artifacts.
 
 ## Configuration
 
@@ -43,14 +64,6 @@ First run writes `~/.hotusage/collector.json`:
 `user_email` defaults to `git config user.email`. Sync state (per-session
 fingerprints, so only changed sessions are re-sent) lives in
 `~/.hotusage/collector-state.json`.
-
-## Start at login
-
-```bash
-sed "s|__COLLECTOR__|$HOME/Code/hotusage-collector|" dev.hotdata.hotusage-collector.plist \
-  > ~/Library/LaunchAgents/dev.hotdata.hotusage-collector.plist
-launchctl load ~/Library/LaunchAgents/dev.hotdata.hotusage-collector.plist
-```
 
 ## Wire format
 

@@ -1,6 +1,6 @@
 [package]
 name = "hotusage-collector"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
@@ -8,6 +8,13 @@ chrono = "0.4.45"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+ureq = { version = "3.4.1", features = ["json"] }
+
+# tray/indicator only on macOS (top menu) and Windows (taskbar tray);
+# Linux runs headless (--daemon) and must not pull the GTK stack
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tao = "0.37.0"
 tray-icon = "0.24.2"
-ureq = { version = "3.4.1", features = ["json"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_System_Console", "Win32_Foundation"] }
