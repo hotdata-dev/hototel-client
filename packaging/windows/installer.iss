@@ -19,6 +19,9 @@ OutputBaseFilename=hotusage-collector-setup
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
+; the Run-key autostart keeps the tray running in every session; close it so
+; install/upgrade can replace the exe
+CloseApplications=force
 
 [Files]
 Source: "hotusage-collector.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -32,4 +35,6 @@ Filename: "{app}\hotusage-collector.exe"; Parameters: "install"; Flags: runhidde
 Filename: "{app}\hotusage-collector.exe"; Description: "Start hotusage collector"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
+; stop the running tray first or the locked exe survives the uninstall
+Filename: "{cmd}"; Parameters: "/C taskkill /IM hotusage-collector.exe /F"; Flags: runhidden; RunOnceId: "killtray"
 Filename: "{app}\hotusage-collector.exe"; Parameters: "uninstall"; Flags: runhidden; RunOnceId: "unregister"

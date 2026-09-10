@@ -18,7 +18,8 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-          - os: ubuntu-latest
+          # 22.04 keeps the .deb's glibc floor low (2.35) for older distros
+          - os: ubuntu-22.04
           - os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
@@ -29,6 +30,16 @@ jobs:
         id: v
         shell: bash
         run: echo "version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Tag must match Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          if [ "$GITHUB_REF_NAME" != "v$V" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $V - bump Cargo.toml (and Cargo.lock) or retag" >&2
+            exit 1
+          fi
 
       # ---------------- macOS: universal binary, .app bundle zip + tar.gz ----
       - name: Build (macOS universal)
@@ -76,8 +87,10 @@ jobs:
           $V = "${{ steps.v.outputs.version }}"
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/hotusage-collector.exe packaging/windows/
+          # x64compatible needs Inno Setup >= 6.3; upgrade unconditionally
+          # (installs when absent) instead of trusting whatever the image has
+          choco upgrade innosetup -y --no-progress
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (!(Test-Path $iscc)) { choco install innosetup -y --no-progress; }
           & $iscc "/DVersion=$V" "/Odist" "/Fhotusage-collector-$V-windows-x86_64-setup" packaging/windows/installer.iss
           Compress-Archive -Path target/release/hotusage-collector.exe -DestinationPath "dist/hotusage-collector-$V-windows-x86_64.zip"
 

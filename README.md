@@ -24,7 +24,7 @@ Grab the latest [GitHub Release](https://github.com/hotdata-dev/hotusage-collect
 
 | OS | Installer | What it does |
 |----|-----------|--------------|
-| macOS | `...-macos-universal.app.zip` | unzip, drag to Applications, open (right-click -> Open the first time: unsigned). Then `hotusage-collector install` from the app binary, or use the raw tar.gz + `install` for the LaunchAgent. |
+| macOS | `...-macos-universal.app.zip` | unzip, drag to Applications. Unsigned: on first launch macOS refuses; on macOS 15+ approve it via System Settings -> Privacy & Security -> Open Anyway after the failed attempt (older macOS: right-click -> Open). Then `hotusage-collector install` from the app binary, or use the raw tar.gz + `install` for the LaunchAgent. |
 | Windows | `...-windows-x86_64-setup.exe` | per-user install (no admin); registers autostart and launches the tray app |
 | Linux | `...-linux-amd64.deb` | `sudo dpkg -i ...`; then per user: `hotusage-collector install` (systemd user daemon) |
 
