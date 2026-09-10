@@ -18,6 +18,20 @@ Parsed providers:
 Cursor and Gemini CLI store no local token counts, so there is nothing to
 collect for them.
 
+## Install
+
+Grab the latest [GitHub Release](https://github.com/hotdata-dev/hotusage-collector/releases):
+
+| OS | Installer | What it does |
+|----|-----------|--------------|
+| macOS | `...-macos-universal.app.zip` | unzip, drag to Applications. Unsigned: on first launch macOS refuses; on macOS 15+ approve it via System Settings -> Privacy & Security -> Open Anyway after the failed attempt (older macOS: right-click -> Open). Then `hotusage-collector install` from the app binary, or use the raw tar.gz + `install` for the LaunchAgent. |
+| Windows | `...-windows-x86_64-setup.exe` | per-user install (no admin); registers autostart and launches the tray app |
+| Linux | `...-linux-amd64.deb` | `sudo dpkg -i ...`; then per user: `hotusage-collector install` (systemd user daemon) |
+
+Raw binaries (`.tar.gz` / `.zip`) are attached to every release too, and every
+CI run uploads per-OS build artifacts. Releases are cut by pushing a `v*` tag
+matching `Cargo.toml`'s version.
+
 ## Build & run
 
 ```bash

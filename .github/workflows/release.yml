@@ -1,0 +1,118 @@
+name: release
+
+# Tag v* -> build binaries + installers for every OS and attach them to a
+# GitHub Release. workflow_dispatch builds the same artifacts without
+# publishing a release (grab them from the run's artifacts).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+          # 22.04 keeps the .deb's glibc floor low (2.35) for older distros
+          - os: ubuntu-22.04
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Version
+        id: v
+        shell: bash
+        run: echo "version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Tag must match Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          if [ "$GITHUB_REF_NAME" != "v$V" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $V - bump Cargo.toml (and Cargo.lock) or retag" >&2
+            exit 1
+          fi
+
+      # ---------------- macOS: universal binary, .app bundle zip + tar.gz ----
+      - name: Build (macOS universal)
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p dist
+          lipo -create -output dist/hotusage-collector \
+            target/aarch64-apple-darwin/release/hotusage-collector \
+            target/x86_64-apple-darwin/release/hotusage-collector
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          APP="dist/hotusage collector.app"
+          mkdir -p "$APP/Contents/MacOS"
+          sed "s/__VERSION__/$V/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
+          cp dist/hotusage-collector "$APP/Contents/MacOS/hotusage-collector"
+          ditto -c -k --keepParent "$APP" "dist/hotusage-collector-$V-macos-universal.app.zip"
+          tar -C dist -czf "dist/hotusage-collector-$V-macos-universal.tar.gz" hotusage-collector
+          rm -rf "$APP" dist/hotusage-collector
+
+      # ---------------- Linux: .deb + tar.gz ---------------------------------
+      - name: Build & package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          cargo build --release
+          mkdir -p dist deb/DEBIAN deb/usr/bin
+          cp target/release/hotusage-collector deb/usr/bin/
+          sed "s/__VERSION__/$V/g" packaging/linux/control > deb/DEBIAN/control
+          dpkg-deb --build --root-owner-group deb "dist/hotusage-collector-$V-linux-amd64.deb"
+          tar -C target/release -czf "dist/hotusage-collector-$V-linux-x86_64.tar.gz" hotusage-collector
+
+      # ---------------- Windows: Inno Setup installer + zip ------------------
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: cargo build --release
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $V = "${{ steps.v.outputs.version }}"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/hotusage-collector.exe packaging/windows/
+          # x64compatible needs Inno Setup >= 6.3; upgrade unconditionally
+          # (installs when absent) instead of trusting whatever the image has
+          choco upgrade innosetup -y --no-progress
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DVersion=$V" "/Odist" "/Fhotusage-collector-$V-windows-x86_64-setup" packaging/windows/installer.iss
+          Compress-Archive -Path target/release/hotusage-collector.exe -DestinationPath "dist/hotusage-collector-$V-windows-x86_64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ runner.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --generate-notes \
+            --title "hotusage-collector $GITHUB_REF_NAME"

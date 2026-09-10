@@ -1,0 +1,11 @@
+Package: hotusage-collector
+Version: __VERSION__
+Section: utils
+Priority: optional
+Architecture: amd64
+Depends: libc6 (>= 2.35), libgcc-s1
+Maintainer: hotdata <eddie@hotdata.dev>
+Description: hotusage collector - AI coding-agent usage collector
+ Parses local Claude Code / Codex / OpenCode history and sends changed
+ sessions to a central hotusage server. Runs headless; register the
+ per-user daemon with: hotusage-collector install
