@@ -4,7 +4,7 @@ Cross-platform background agent (Rust) that collects AI coding-agent token
 usage and sends it to a central [hotusage](../hotusage) server. Parses this
 machine's local history every N minutes and uploads only sessions that changed.
 
-Desktop indicator on macOS (top menu bar, ⏶) and Windows (taskbar tray);
+Desktop indicator on macOS (top menu bar, flame template icon) and Windows (taskbar tray);
 Linux runs headless as a systemd user daemon.
 
 Parsed providers:

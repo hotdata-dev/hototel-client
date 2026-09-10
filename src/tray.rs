@@ -36,23 +36,18 @@ fn open_config() {
     let _ = Command::new("notepad").arg(&path).spawn();
 }
 
-/// Windows tray icons require an image; draw a simple 32x32 up-arrow.
-#[cfg(target_os = "windows")]
-fn arrow_icon() -> tray_icon::Icon {
-    const N: usize = 32;
-    let mut rgba = vec![0u8; N * N * 4];
-    for y in 6..26 {
-        let half = (y - 6) * 12 / 20 + 2; // widening triangle
-        let cx = N / 2;
-        for x in cx.saturating_sub(half)..(cx + half).min(N) {
-            let i = (y * N + x) * 4;
-            rgba[i] = 255;
-            rgba[i + 1] = 255;
-            rgba[i + 2] = 255;
-            rgba[i + 3] = 255;
-        }
+/// Flame silhouette, pre-rasterized to a 36x36 alpha mask and baked into the
+/// binary. Colorized per platform: black on macOS (a template image, so the
+/// system recolors it for dark/light menu bars), white on the Windows tray.
+const FLAME_ALPHA: &[u8] = include_bytes!("../assets/flame_alpha_36.bin");
+const FLAME_SIZE: u32 = 36;
+
+fn flame_icon(shade: u8) -> tray_icon::Icon {
+    let mut rgba = Vec::with_capacity(FLAME_ALPHA.len() * 4);
+    for &a in FLAME_ALPHA {
+        rgba.extend_from_slice(&[shade, shade, shade, a]);
     }
-    tray_icon::Icon::from_rgba(rgba, N as u32, N as u32).expect("icon")
+    tray_icon::Icon::from_rgba(rgba, FLAME_SIZE, FLAME_SIZE).expect("icon")
 }
 
 pub fn run() -> ! {
@@ -118,9 +113,9 @@ pub fn run() -> ! {
                 status_item = Some(status);
                 let builder = TrayIconBuilder::new().with_menu(Box::new(menu));
                 #[cfg(target_os = "macos")]
-                let builder = builder.with_title("\u{23F6}"); // ⏶ in the menu bar
+                let builder = builder.with_icon(flame_icon(0)).with_icon_as_template(true);
                 #[cfg(target_os = "windows")]
-                let builder = builder.with_icon(arrow_icon()).with_tooltip("hotusage");
+                let builder = builder.with_icon(flame_icon(255)).with_tooltip("hotusage");
                 _tray = Some(builder.build().expect("failed to create tray icon"));
                 let _ = sync_proxy.send_event(UserEvent::SyncRequested);
             }
