@@ -102,6 +102,22 @@ fn fingerprint(b: &Built) -> String {
     format!("{}|{}", b.session.ended_at, b.session.requests)
 }
 
+/// Exact loopback-host match, not substring: "localhost.example.net" must not
+/// qualify, and "[::1]:8377" must.
+fn is_loopback(url: &str) -> bool {
+    let host = url
+        .split_once("//")
+        .map(|(_, rest)| rest.split('/').next().unwrap_or(""))
+        .unwrap_or("");
+    let host = if host.starts_with('[') {
+        // bracketed IPv6: strip only a port after the closing bracket
+        host.split_once(']').map_or(host, |(h, _)| &host[..h.len() + 1])
+    } else {
+        host.rsplit_once(':').map_or(host, |(h, _)| h)
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+}
+
 /// Parse local history, send changed sessions to the server.
 /// Returns a short human status string, Err(status) on failure.
 pub fn sync(config: &Config) -> Result<String, String> {
@@ -109,9 +125,7 @@ pub fn sync(config: &Config) -> Result<String, String> {
     // token: with the production default URL, a fresh unconfigured install
     // must stay silent until the user sets `token` (loopback dev servers are
     // exempt - the server's dev mode accepts tokenless ingest locally).
-    let loopback = config.server_url.contains("//127.0.0.1")
-        || config.server_url.contains("//localhost");
-    if config.token.trim().is_empty() && !loopback {
+    if config.token.trim().is_empty() && !is_loopback(&config.server_url) {
         return Err(format!(
             "not configured: set `token` in {} (Edit Config in the menu)",
             config_path().display()
@@ -161,5 +175,22 @@ pub fn sync(config: &Config) -> Result<String, String> {
         }
         Err(ureq::Error::StatusCode(code)) => Err(format!("server error {code}")),
         Err(e) => Err(format!("failed: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_loopback;
+
+    #[test]
+    fn loopback_hosts_are_exact_matches() {
+        assert!(is_loopback("http://127.0.0.1:8377"));
+        assert!(is_loopback("http://localhost:8377/x"));
+        assert!(is_loopback("http://localhost"));
+        assert!(is_loopback("http://[::1]:8377"));
+        assert!(is_loopback("http://[::1]"));
+        assert!(!is_loopback("https://hotusage.ai"));
+        assert!(!is_loopback("https://localhost.example.net"));
+        assert!(!is_loopback("https://127.0.0.1.example.net:443"));
     }
 }
