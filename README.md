@@ -79,6 +79,34 @@ First run writes `~/.hotusage/collector.json`:
 fingerprints, so only changed sessions are re-sent) lives in
 `~/.hotusage/collector-state.json`.
 
+## What is sent (and what is not)
+
+**All parsing happens locally.** The collector reads your transcript files on
+disk, extracts usage numbers, and sends only the derived rows below. Transcript
+files are never uploaded, and message bodies, assistant responses, tool calls,
+tool results, code, and diffs are never transmitted.
+
+Sent per session:
+
+| Field | Notes |
+|-------|-------|
+| `session_id`, `provider` | ids only |
+| `project`, `cwd` | working directory basename and **full local path** |
+| `title` | the agent's own session title. When the agent recorded none, the fallback is the **first line of your first prompt, truncated to 80 characters** |
+| `started_at`, `ended_at`, `requests` | timing and request count |
+| `models` | model ids used |
+| `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` | counts |
+| `cost_*` | list-price estimates derived from those counts |
+| `peak_context_tokens` | largest single-request context |
+
+Sent per request: `session_id`, `provider`, `seq`, `ts`, `context_tokens`,
+`output_tokens`. Sent per day: `session_id`, `provider`, `day`, the same token
+counts and cost estimates.
+
+So the only fields that can carry text you typed are `title` (a summary, or up
+to 80 characters of a first prompt) and `cwd` (which reveals directory and user
+names). Everything else is counts, timestamps, and identifiers.
+
 ## Wire format
 
 `POST {server_url}/ingest` with `Authorization: Bearer <token>` and JSON body:
