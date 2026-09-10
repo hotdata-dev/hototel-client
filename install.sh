@@ -1,33 +1,22 @@
 #!/bin/sh
 # hotusage collector installer for macOS and Linux.
 #
-#   gh api -H "Accept: application/vnd.github.raw" \
-#     repos/hotdata-dev/hotusage-collector/contents/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-collector/main/install.sh | sh
 #
 # Downloads the latest release binary for this machine, puts it on PATH, and
 # registers it as a background agent (macOS LaunchAgent / systemd user unit).
-# Uses the gh CLI because this repo is private.
 set -eu
 
 REPO=hotdata-dev/hotusage-collector
 BIN=hotusage-collector
 
-command -v gh >/dev/null 2>&1 || {
-  echo "error: the gh CLI is required (this repo is private): https://cli.github.com" >&2
-  exit 1
-}
-gh auth status >/dev/null 2>&1 || {
-  echo "error: not logged in - run: gh auth login" >&2
-  exit 1
-}
-
 os=$(uname -s)
 arch=$(uname -m)
 case "$os" in
-  Darwin) pattern='*macos-universal.tar.gz' ;;
+  Darwin) suffix=macos-universal.tar.gz ;;
   Linux)
     case "$arch" in
-      x86_64 | amd64) pattern='*linux-x86_64.tar.gz' ;;
+      x86_64 | amd64) suffix=linux-x86_64.tar.gz ;;
       *)
         echo "error: no prebuilt Linux $arch binary; build from source with: cargo build --release" >&2
         exit 1 ;;
@@ -41,8 +30,17 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 echo "downloading the latest $BIN release ($os $arch)..."
-gh release download -R "$REPO" --pattern "$pattern" -D "$tmp"
-tar -xzf "$tmp"/*.tar.gz -C "$tmp"
+# resolve the latest tag, then fetch the matching asset by name
+tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
+  sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+[ -n "$tag" ] || { echo "error: could not resolve the latest release tag" >&2; exit 1; }
+asset="$BIN-${tag#v}-$suffix"
+curl -fsSL -o "$tmp/$asset" \
+  "https://github.com/$REPO/releases/download/$tag/$asset" || {
+  echo "error: no release asset $asset in $tag" >&2
+  exit 1
+}
+tar -xzf "$tmp/$asset" -C "$tmp"
 [ -f "$tmp/$BIN" ] || { echo "error: release archive did not contain $BIN" >&2; exit 1; }
 chmod +x "$tmp/$BIN"
 # downloads can carry macOS quarantine; the binary is unsigned, so clear it

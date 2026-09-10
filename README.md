@@ -20,10 +20,10 @@ collect for them.
 
 ## Install
 
-**macOS and Linux, one line** (needs the `gh` CLI, since this repo is private):
+**macOS and Linux, one line:**
 
 ```bash
-gh api -H "Accept: application/vnd.github.raw" repos/hotdata-dev/hotusage-collector/contents/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-collector/main/install.sh | sh
 ```
 
 That downloads the right release binary for the machine, puts it on PATH,
