@@ -93,7 +93,10 @@ pub fn install() -> Result<String, String> {
     let path = dir.join("hotusage-collector.service");
     fs::write(&path, unit).map_err(|e| e.to_string())?;
     run("systemctl", &["--user", "daemon-reload"])?;
-    run("systemctl", &["--user", "enable", "--now", "hotusage-collector"])?;
+    run("systemctl", &["--user", "enable", "hotusage-collector"])?;
+    // restart, not `enable --now`: start is a no-op on an already-active unit,
+    // so an upgrade would keep running the replaced binary until reboot.
+    run("systemctl", &["--user", "restart", "hotusage-collector"])?;
     Ok(format!("installed systemd user unit {} (headless daemon, running now)", path.display()))
 }
 

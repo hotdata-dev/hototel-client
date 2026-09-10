@@ -53,6 +53,10 @@ else
   dest="$HOME/.local/bin"
   mkdir -p "$dest"
 fi
+# unlink first: a cross-device mv falls back to a copy, and writing over a
+# RUNNING executable fails with ETXTBSY on Linux (every re-run while the
+# agent is up). Removing the old inode leaves the running process untouched.
+rm -f "$dest/$BIN"
 mv "$tmp/$BIN" "$dest/$BIN"
 echo "installed $dest/$BIN"
 case ":$PATH:" in
@@ -60,8 +64,11 @@ case ":$PATH:" in
   *) echo "note: $dest is not on your PATH - add it to your shell profile" ;;
 esac
 
-# register the login/background agent (idempotent; re-running re-points it)
-"$dest/$BIN" install
+# register the login/background agent (idempotent; re-running re-points it).
+# Non-fatal: `install` needs a desktop/systemd user session, which a plain SSH
+# shell does not have -- the binary is still usable, so keep going and print
+# the next steps rather than aborting under `set -e`.
+"$dest/$BIN" install || echo "note: agent registration failed (no desktop/systemd session?) - run '$dest/$BIN install' from a login session" >&2
 
 cat <<TXT
 
