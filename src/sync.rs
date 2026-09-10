@@ -36,7 +36,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            server_url: "http://127.0.0.1:8377".into(),
+            server_url: "https://hotusage.ai".into(),
             token: String::new(),
             user_email: String::new(),
             interval_minutes: 15,
@@ -105,6 +105,18 @@ fn fingerprint(b: &Built) -> String {
 /// Parse local history, send changed sessions to the server.
 /// Returns a short human status string, Err(status) on failure.
 pub fn sync(config: &Config) -> Result<String, String> {
+    // Refuse to ship local session metadata to a remote server without a
+    // token: with the production default URL, a fresh unconfigured install
+    // must stay silent until the user sets `token` (loopback dev servers are
+    // exempt - the server's dev mode accepts tokenless ingest locally).
+    let loopback = config.server_url.contains("//127.0.0.1")
+        || config.server_url.contains("//localhost");
+    if config.token.trim().is_empty() && !loopback {
+        return Err(format!(
+            "not configured: set `token` in {} (Edit Config in the menu)",
+            config_path().display()
+        ));
+    }
     let built: Vec<Built> = scan_all().into_iter().filter_map(build_session).collect();
     let total = built.len();
     let mut state = load_state();
