@@ -20,7 +20,18 @@ collect for them.
 
 ## Install
 
-Grab the latest [GitHub Release](https://github.com/hotdata-dev/hotusage-collector/releases):
+**macOS and Linux, one line:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-collector/main/install.sh | sh
+```
+
+That downloads the right release binary for the machine, puts it on PATH,
+registers the background agent (LaunchAgent / systemd user unit), and tells you
+to fill in `~/.hotusage/collector.json`.
+
+Or grab an installer from the latest
+[GitHub Release](https://github.com/hotdata-dev/hotusage-collector/releases):
 
 | OS | Installer | What it does |
 |----|-----------|--------------|
