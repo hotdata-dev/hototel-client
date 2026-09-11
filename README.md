@@ -46,8 +46,11 @@ matching `Cargo.toml`'s version.
 ### macOS code signing
 
 The release workflow signs and notarizes the macOS binary and `.app` when these
-repository secrets are present, and silently ships unsigned builds (with a CI
-warning) when they are not — so a fork or a pre-certificate release still works:
+repository secrets are present, and ships unsigned builds (with a CI warning)
+when none of them are — so a fork or a pre-certificate release still works.
+Setting the certificate without the notarization key fails the build, because a
+signed-but-un-notarized download is refused by Gatekeeper just like an unsigned
+one:
 
 | Secret | What it is |
 |--------|------------|

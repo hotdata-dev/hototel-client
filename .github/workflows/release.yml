@@ -80,6 +80,18 @@ jobs:
           echo "::warning::MACOS_CERT_P12 is not set - shipping UNSIGNED macOS binaries. \
           Teammates will have to clear Gatekeeper by hand (Privacy & Security -> Open Anyway)."
 
+      # A signed but un-notarized download is refused by Gatekeeper exactly like
+      # an unsigned one, so half-configured credentials are a hard error rather
+      # than a release that looks signed and still fails on every machine.
+      - name: Signing credentials must be complete (macOS)
+        if: runner.os == 'macOS' && env.MACOS_CERT_P12 != '' && env.APPLE_API_KEY_P8 == ''
+        run: |
+          echo "MACOS_CERT_P12 is set but APPLE_API_KEY_P8 is not: the build would be \
+          signed without being notarized, which Gatekeeper still rejects. Set the \
+          notarization secrets (APPLE_API_KEY_P8 / _KEY_ID / _ISSUER_ID) or unset the \
+          certificate to ship an unsigned release." >&2
+          exit 1
+
       - name: Import the Developer ID certificate (macOS)
         if: runner.os == 'macOS' && env.MACOS_CERT_P12 != ''
         run: |
@@ -119,10 +131,16 @@ jobs:
           V="${{ steps.v.outputs.version }}"
           APP="dist/hotusage collector.app"
           echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/key.p8"
+          # notarytool can exit 0 on an Invalid submission, so assert the status
           notarize() {
-            xcrun notarytool submit "$1" --wait \
+            out=$(xcrun notarytool submit "$1" --wait \
               --key "$RUNNER_TEMP/key.p8" --key-id "$APPLE_API_KEY_ID" \
-              --issuer "$APPLE_API_ISSUER_ID"
+              --issuer "$APPLE_API_ISSUER_ID")
+            echo "$out"
+            echo "$out" | grep -q "status: Accepted" || {
+              echo "notarization of $1 was not Accepted" >&2
+              exit 1
+            }
           }
           # notarytool takes an archive, not a bare executable
           ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/app.zip"
