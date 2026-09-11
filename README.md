@@ -107,6 +107,21 @@ and clears it locally, so the machine stops reporting. The local half happens
 even when the server is unreachable; other machines you signed in stay signed
 in, since each holds its own token.
 
+## Security notes
+
+- `~/.hotusage/` is created `0700` and `collector.json` / `collector-state.json`
+  are written `0600`: the config holds a bearer token.
+- Only `https://` servers are accepted (loopback excepted for local dev), and
+  redirects are refused rather than followed — a redirected POST arrives as a
+  GET, which once let uploads be silently discarded.
+- An upload counts as delivered only when the server acknowledges it; a 2xx
+  from something that is not the hotusage API does not.
+- Helper binaries (`hostname`, `git`, `launchctl`, `open`, `reg`, ...) are run
+  with a fixed system `PATH`, so a writable directory on the user's `PATH`
+  cannot hijack a process that runs at login and holds a token.
+- `install.sh` verifies the downloaded archive against the release's
+  `SHA256SUMS` and refuses to install on a mismatch.
+
 ## Configuration
 
 First run writes `~/.hotusage/collector.json`:

@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# this job only compiles and uploads artifacts; it never needs write scope
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:

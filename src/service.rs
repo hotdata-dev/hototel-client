@@ -14,12 +14,28 @@ use std::process::Command;
 
 const LABEL: &str = "dev.hotdata.hotusage-collector";
 
+/// A `Command` that cannot be hijacked by a writable directory on `PATH`.
+/// This process runs at login and holds a bearer token, so every helper it
+/// shells out to (hostname, git, launchctl, reg, open, ...) is resolved
+/// against a fixed system PATH instead of the inherited one.
+pub fn safe_command(program: &str) -> Command {
+    let mut c = Command::new(program);
+    #[cfg(unix)]
+    c.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin");
+    #[cfg(windows)]
+    {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        c.env("PATH", format!(r"{root}\System32;{root}"));
+    }
+    c
+}
+
 fn exe() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|e| format!("cannot resolve own path: {e}"))
 }
 
 fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
-    let out = Command::new(cmd)
+    let out = safe_command(cmd)
         .args(args)
         .output()
         .map_err(|e| format!("{cmd}: {e}"))?;
@@ -37,6 +53,12 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 pub fn install() -> Result<String, String> {
     let exe = exe()?;
+    // /tmp is shared and pre-creatable by other local accounts; status lines
+    // name the signed-in address, so keep them in the user's own log dir
+    let logs = crate::parsers::home_dir().join("Library/Logs");
+    fs::create_dir_all(&logs).map_err(|e| e.to_string())?;
+    let log = logs.join("hotusage-collector.log");
+    let log = log.display();
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -46,8 +68,8 @@ pub fn install() -> Result<String, String> {
   <key>ProgramArguments</key><array><string>{}</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/hotusage-collector.log</string>
-  <key>StandardErrorPath</key><string>/tmp/hotusage-collector.log</string>
+  <key>StandardOutPath</key><string>{log}</string>
+  <key>StandardErrorPath</key><string>{log}</string>
 </dict>
 </plist>
 "#,

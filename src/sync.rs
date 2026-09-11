@@ -9,11 +9,27 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 fn config_dir() -> PathBuf {
     crate::parsers::home_dir().join(".hotusage")
+}
+
+/// The config holds a bearer token, so keep it off other local accounts.
+/// Best-effort: a failure to tighten the mode must not stop the collector.
+#[cfg(unix)]
+fn restrict(path: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+}
+#[cfg(not(unix))]
+fn restrict(_path: &std::path::Path, _mode: u32) {}
+
+fn ensure_config_dir() -> std::io::Result<PathBuf> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir)?;
+    restrict(&dir, 0o700);
+    Ok(dir)
 }
 
 pub fn config_path() -> PathBuf {
@@ -36,7 +52,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            server_url: "https://hotusage.ai".into(),
+            server_url: "https://www.hotusage.ai".into(),
             token: String::new(),
             user_email: String::new(),
             interval_minutes: 15,
@@ -45,7 +61,7 @@ impl Default for Config {
 }
 
 fn cmd_stdout(cmd: &str, args: &[&str]) -> Option<String> {
-    Command::new(cmd)
+    crate::service::safe_command(cmd)
         .args(args)
         .output()
         .ok()
@@ -70,7 +86,7 @@ fn guess_email() -> String {
 }
 
 pub fn load_config() -> Config {
-    let _ = fs::create_dir_all(config_dir());
+    let _ = ensure_config_dir();
     let mut cfg: Config = fs::read_to_string(config_path())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -78,30 +94,65 @@ pub fn load_config() -> Config {
     if cfg.user_email.is_empty() {
         cfg.user_email = guess_email();
     }
+    // Installs created before the default changed point at the apex, which
+    // 301s to www; a POST that follows it arrives as a GET (401 on sign-in,
+    // a silently discarded upload on sync). Changing the default cannot help
+    // those machines, because their config file already exists -- so repair
+    // the value itself, on the exact host and nothing else.
+    if let Some(fixed) = apex_to_www(&cfg.server_url) {
+        cfg.server_url = fixed;
+        let _ = save_config(&cfg);
+    }
     if !config_path().is_file() {
         let _ = fs::write(config_path(), serde_json::to_string_pretty(&cfg).unwrap());
     }
+    restrict(&config_path(), 0o600);
     cfg
 }
 
+/// `https://hotusage.ai[/...]` -> `https://www.hotusage.ai[/...]`, or None
+/// when nothing needs changing.
+fn apex_to_www(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://hotusage.ai")?;
+    if rest.is_empty() || rest.starts_with('/') {
+        Some(format!("https://www.hotusage.ai{rest}"))
+    } else {
+        None
+    }
+}
+
 pub fn save_config(cfg: &Config) -> std::io::Result<()> {
-    fs::create_dir_all(config_dir())?;
+    ensure_config_dir()?;
     let tmp = config_path().with_extension("json.tmp");
     fs::write(&tmp, serde_json::to_string_pretty(cfg).unwrap())?;
+    // tighten before the rename, so the token is never briefly world-readable
+    restrict(&tmp, 0o600);
     fs::rename(tmp, config_path())
 }
 
+/// Marks state written by a build that verifies delivery. Older state may
+/// claim sessions were sent that the server never stored (see the redirect
+/// note in `sync`), so it is discarded once and everything is re-sent --
+/// harmless, because ingest upserts on (user, session).
+const STATE_EPOCH: &str = "__verified_delivery_v1";
+
 fn load_state() -> HashMap<String, String> {
-    fs::read_to_string(state_path())
+    let mut state: HashMap<String, String> = fs::read_to_string(state_path())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if !state.contains_key(STATE_EPOCH) {
+        state.clear();
+        state.insert(STATE_EPOCH.to_string(), "1".into());
+    }
+    state
 }
 
 fn save_state(state: &HashMap<String, String>) -> std::io::Result<()> {
-    fs::create_dir_all(config_dir())?;
+    ensure_config_dir()?;
     let tmp = state_path().with_extension("json.tmp");
     fs::write(&tmp, serde_json::to_string(state).unwrap())?;
+    restrict(&tmp, 0o600);
     fs::rename(tmp, state_path())
 }
 
@@ -128,8 +179,24 @@ fn is_loopback(url: &str) -> bool {
 fn agent(secs: u64) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(secs)))
+        // A redirect turns a POST into a GET, which silently became "success"
+        // against the apex domain's 301: the server never saw the data. Fail
+        // loudly instead and let the operator fix the URL.
+        .max_redirects(0)
         .build()
         .into()
+}
+
+/// The token and every session record travel in this request, so refuse to
+/// send them in the clear. Loopback is exempt for local development.
+fn require_secure(server_url: &str) -> Result<(), String> {
+    if server_url.starts_with("https://") || is_loopback(server_url) {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to use {server_url}: set an https:// server_url in {}",
+        config_path().display()
+    ))
 }
 
 /// The approval URL is opened through the platform shell (`cmd /C start` on
@@ -160,6 +227,7 @@ pub struct SignIn {
 /// Ask the server to start a sign-in. The caller opens `verification_url` and
 /// then polls; nothing is stored until the person approves in the browser.
 pub fn signin_start(server_url: &str) -> Result<SignIn, String> {
+    require_secure(server_url)?;
     let url = format!("{}/api/device/start", server_url.trim_end_matches('/'));
     let mut resp = agent(30)
         .post(&url)
@@ -188,6 +256,7 @@ pub fn signin_start(server_url: &str) -> Result<SignIn, String> {
 /// Block until the person approves (or the request expires), then persist the
 /// token and the address it is bound to. Returns the signed-in address.
 pub fn signin_wait(server_url: &str, s: &SignIn) -> Result<String, String> {
+    require_secure(server_url)?;
     let url = format!("{}/api/device/poll", server_url.trim_end_matches('/'));
     let deadline = std::time::Instant::now() + Duration::from_secs(s.expires_in);
     while std::time::Instant::now() < deadline {
@@ -242,6 +311,7 @@ pub fn signout() -> Result<String, String> {
     if cfg.token.trim().is_empty() {
         return Err("not signed in".into());
     }
+    require_secure(&cfg.server_url)?;
     let url = format!("{}/api/collector/signout", cfg.server_url.trim_end_matches('/'));
     let remote = agent(30)
         .post(&url)
@@ -273,6 +343,7 @@ pub fn sync(config: &Config) -> Result<String, String> {
                     `hotusage-collector signin`)"
             .to_string());
     }
+    require_secure(&config.server_url)?;
     let built: Vec<Built> = scan_all().into_iter().filter_map(build_session).collect();
     let total = built.len();
     let mut state = load_state();
@@ -302,8 +373,23 @@ pub fn sync(config: &Config) -> Result<String, String> {
         .post(&url)
         .header("Authorization", &format!("Bearer {}", config.token))
         .send_json(&payload);
+    // A 2xx alone is not proof of delivery: following the apex 301 produced a
+    // 200 from the login page while the data went nowhere, and those sessions
+    // were then marked sent forever. Require the server's own acknowledgement.
     match resp {
-        Ok(_) => {
+        Ok(mut r) => {
+            let body: serde_json::Value = r
+                .body_mut()
+                .read_json()
+                .map_err(|_| "server did not return an ingest response - \
+                              check server_url points at the hotusage API"
+                    .to_string())?;
+            if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                return Err(format!(
+                    "server rejected the upload: {}",
+                    body.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error")
+                ));
+            }
             for b in &changed {
                 let key = format!("{}:{}", b.session.provider, b.session.session_id);
                 state.insert(key, fingerprint(b));
@@ -311,6 +397,10 @@ pub fn sync(config: &Config) -> Result<String, String> {
             save_state(&state).map_err(|e| format!("failed to save state: {e}"))?;
             Ok(format!("sent {} changed of {total} sessions", changed.len()))
         }
+        Err(ureq::Error::RedirectFailed) => Err(format!(
+            "{} redirected the upload - point server_url at the API host itself",
+            config.server_url
+        )),
         Err(ureq::Error::StatusCode(code)) => Err(format!("server error {code}")),
         Err(e) => Err(format!("failed: {e}")),
     }
@@ -318,7 +408,18 @@ pub fn sync(config: &Config) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_loopback, validated_url};
+    use super::{apex_to_www, is_loopback, validated_url};
+
+    #[test]
+    fn apex_is_repaired_but_nothing_else_is() {
+        assert_eq!(apex_to_www("https://hotusage.ai").as_deref(),
+                   Some("https://www.hotusage.ai"));
+        assert_eq!(apex_to_www("https://hotusage.ai/").as_deref(),
+                   Some("https://www.hotusage.ai/"));
+        assert!(apex_to_www("https://www.hotusage.ai").is_none());
+        assert!(apex_to_www("https://hotusage.ai.evil.example").is_none());
+        assert!(apex_to_www("https://internal.example").is_none());
+    }
 
     #[test]
     fn approval_url_must_be_safe() {

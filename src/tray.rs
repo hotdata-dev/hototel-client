@@ -2,7 +2,6 @@
 //! Linux has no indicator by design — it runs `--daemon` instead.
 #![cfg(any(target_os = "macos", target_os = "windows"))]
 
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -29,17 +28,19 @@ enum UserEvent {
 
 fn open_url(url: &str) {
     #[cfg(target_os = "macos")]
-    let _ = Command::new("open").arg(url).spawn();
+    let _ = crate::service::safe_command("open").arg(url).spawn();
     #[cfg(target_os = "windows")]
-    let _ = Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    let _ = crate::service::safe_command("cmd")
+        .args(["/C", "start", "", url])
+        .spawn();
 }
 
 fn open_config() {
     let path = sync::config_path();
     #[cfg(target_os = "macos")]
-    let _ = Command::new("open").arg("-t").arg(&path).spawn();
+    let _ = crate::service::safe_command("open").arg("-t").arg(&path).spawn();
     #[cfg(target_os = "windows")]
-    let _ = Command::new("notepad").arg(&path).spawn();
+    let _ = crate::service::safe_command("notepad").arg(&path).spawn();
 }
 
 /// Flame silhouette, pre-rasterized to a 36x36 alpha mask and baked into the
