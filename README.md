@@ -35,13 +35,46 @@ Or grab an installer from the latest
 
 | OS | Installer | What it does |
 |----|-----------|--------------|
-| macOS | `...-macos-universal.app.zip` | unzip, drag to Applications. Unsigned: on first launch macOS refuses; on macOS 15+ approve it via System Settings -> Privacy & Security -> Open Anyway after the failed attempt (older macOS: right-click -> Open). Then `hotusage-collector install` from the app binary, or use the raw tar.gz + `install` for the LaunchAgent. |
+| macOS | `...-macos-universal.app.zip` | unzip, drag to Applications, launch. Releases built with signing credentials are Developer ID signed and notarized, so Gatekeeper lets them open normally; an unsigned release (see below) is refused on first launch and needs System Settings -> Privacy & Security -> Open Anyway. Then `hotusage-collector install` from the app binary, or use the raw tar.gz + `install` for the LaunchAgent. |
 | Windows | `...-windows-x86_64-setup.exe` | per-user install (no admin); registers autostart and launches the tray app |
 | Linux | `...-linux-amd64.deb` | `sudo dpkg -i ...`; then per user: `hotusage-collector install` (systemd user daemon) |
 
 Raw binaries (`.tar.gz` / `.zip`) are attached to every release too, and every
 CI run uploads per-OS build artifacts. Releases are cut by pushing a `v*` tag
 matching `Cargo.toml`'s version.
+
+### macOS code signing
+
+The release workflow signs and notarizes the macOS binary and `.app` when these
+repository secrets are present, and silently ships unsigned builds (with a CI
+warning) when they are not — so a fork or a pre-certificate release still works:
+
+| Secret | What it is |
+|--------|------------|
+| `MACOS_CERT_P12` | base64 of a **Developer ID Application** certificate exported as `.p12` (requires the $99/yr Apple Developer Program; a free account cannot issue one) |
+| `MACOS_CERT_PASSWORD` | the password set when exporting that `.p12` |
+| `MACOS_SIGN_IDENTITY` | the identity string, e.g. `Developer ID Application: HotData Inc (TEAMID)` |
+| `APPLE_API_KEY_P8` | base64 of an App Store Connect API key (`.p8`) with the Developer role, used for notarization |
+| `APPLE_API_KEY_ID` | that key's ID |
+| `APPLE_API_ISSUER_ID` | the issuer UUID from App Store Connect |
+
+Producing the first three, once enrolled:
+
+```bash
+# in Keychain Access: request a cert from a CA, upload the CSR at
+# developer.apple.com -> Certificates -> Developer ID Application, download and
+# double-click the .cer, then export the resulting identity as cert.p12
+base64 -i cert.p12 | pbcopy          # -> MACOS_CERT_P12
+security find-identity -v -p codesigning   # -> MACOS_SIGN_IDENTITY
+```
+
+Notarization staples a ticket to the `.app`, so it verifies offline. A bare CLI
+executable cannot carry a stapled ticket; the `.tar.gz` binary is signed and
+notarized but checked online the first time it runs. `install.sh` also clears
+the quarantine attribute, which covers unsigned releases and offline machines.
+
+Windows SmartScreen is a separate problem needing its own (OV/EV) certificate;
+the `.exe` is currently unsigned.
 
 ## Build & run
 
