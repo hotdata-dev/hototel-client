@@ -40,6 +40,34 @@ curl -fsSL -o "$tmp/$asset" \
   echo "error: no release asset $asset in $tag" >&2
   exit 1
 }
+
+# Verify against the release's SHA256SUMS. The binaries are unsigned, so this
+# is the only check that the archive is the one CI built; refuse to install
+# anything that does not match, and refuse to skip the check silently.
+if curl -fsSL -o "$tmp/SHA256SUMS" \
+     "https://github.com/$REPO/releases/download/$tag/SHA256SUMS"; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    sum=$(sha256sum "$tmp/$asset" | cut -d" " -f1)
+  else
+    sum=$(shasum -a 256 "$tmp/$asset" | cut -d" " -f1)
+  fi
+  want=$(grep " $asset\$\|  $asset\$" "$tmp/SHA256SUMS" | cut -d" " -f1 | head -1)
+  if [ -z "$want" ]; then
+    echo "error: $asset is not listed in SHA256SUMS for $tag" >&2
+    exit 1
+  fi
+  if [ "$sum" != "$want" ]; then
+    echo "error: checksum mismatch for $asset" >&2
+    echo "  expected $want" >&2
+    echo "  got      $sum" >&2
+    exit 1
+  fi
+  echo "checksum ok"
+else
+  # releases cut before SHA256SUMS existed have nothing to check against
+  echo "warning: $tag publishes no SHA256SUMS - installing unverified" >&2
+fi
+
 tar -xzf "$tmp/$asset" -C "$tmp"
 [ -f "$tmp/$BIN" ] || { echo "error: release archive did not contain $BIN" >&2; exit 1; }
 chmod +x "$tmp/$BIN"

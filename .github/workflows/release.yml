@@ -92,6 +92,13 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # install.sh verifies against this, so a swapped asset is caught even
+      # though the binaries themselves are unsigned
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
