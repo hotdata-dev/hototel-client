@@ -130,16 +130,17 @@ First run writes `~/.hotusage/collector.json`:
 
 ```json
 {
-  "server_url": "https://hotusage.ai",
-  "token": "<written by Sign In; a shared ingest token also works>",
+  "server_url": "https://www.hotusage.ai",
+  "token": "<written by Sign In>",
   "user_email": "you@company.com",
   "interval_minutes": 15
 }
 ```
 
-`user_email` defaults to `git config user.email`. Sync state (per-session
-fingerprints, so only changed sessions are re-sent) lives in
-`~/.hotusage/collector-state.json`.
+Sign In sets `user_email` and `token` for you; before that `user_email`
+falls back to `git config user.email`. Sync state (per-session fingerprints,
+so only changed sessions are re-sent) lives in
+`~/.hotusage/collector-state.json`. Both files are `0600`.
 
 ## What is sent (and what is not)
 
@@ -189,6 +190,3 @@ names). Everything else is counts, timestamps, and identifiers.
 
 Costs are estimates at provider API list prices; the server stamps
 `user_email`/`hostname` onto stored rows and upserts by (user, session).
-
-A Python reference implementation with identical behavior (verified
-field-for-field) lives in the hotusage repo under `collector/`.
