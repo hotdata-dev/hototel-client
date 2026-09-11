@@ -68,8 +68,8 @@ cargo build --release
 ./target/release/hotusage-collector --dump     # print parsed sessions as JSON (debug)
 ```
 
-Tray menu (macOS/Windows): last-sync status, Sync Now, Open Dashboard,
-Edit Config, Quit.
+Tray menu (macOS/Windows): last-sync status, Sign In..., Sync Now,
+Open Dashboard, Edit Config, Quit.
 
 ## Install as a continuous daemon
 
@@ -109,7 +109,7 @@ First run writes `~/.hotusage/collector.json`:
 ```json
 {
   "server_url": "https://hotusage.ai",
-  "token": "<shared HOTUSAGE_INGEST_TOKEN>",
+  "token": "<written by Sign In; a shared ingest token also works>",
   "user_email": "you@company.com",
   "interval_minutes": 15
 }

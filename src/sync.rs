@@ -132,6 +132,22 @@ fn agent(secs: u64) -> ureq::Agent {
         .into()
 }
 
+/// The approval URL is opened through the platform shell (`cmd /C start` on
+/// Windows), so a hostile or compromised server must not be able to smuggle a
+/// command into it: accept only https, or http on a loopback host for local
+/// development, and nothing containing shell metacharacters.
+fn validated_url(url: &str) -> Result<String, String> {
+    let bad = |c: char| "&|;<>^\"'`$(){}[]\\ \t\r\n".contains(c);
+    if url.chars().any(bad) {
+        return Err("server returned an unusable approval URL".into());
+    }
+    let ok = url.starts_with("https://") || (url.starts_with("http://") && is_loopback(url));
+    if !ok {
+        return Err("server returned a non-https approval URL".into());
+    }
+    Ok(url.to_string())
+}
+
 /// A sign-in attempt: the code to show the person, and where to approve it.
 pub struct SignIn {
     pub device_code: String,
@@ -161,9 +177,11 @@ pub fn signin_start(server_url: &str) -> Result<SignIn, String> {
     Ok(SignIn {
         device_code,
         user_code: get("user_code"),
-        verification_url: get("verification_url"),
-        interval: v.get("interval").and_then(|x| x.as_u64()).unwrap_or(3).max(1),
-        expires_in: v.get("expires_in").and_then(|x| x.as_u64()).unwrap_or(600),
+        verification_url: validated_url(&get("verification_url"))?,
+        // clamped: an absurd expiry would pin the poll thread (and the
+        // "signing in" flag that blocks another attempt) open for days
+        interval: v.get("interval").and_then(|x| x.as_u64()).unwrap_or(3).clamp(1, 60),
+        expires_in: v.get("expires_in").and_then(|x| x.as_u64()).unwrap_or(600).clamp(30, 900),
     })
 }
 
@@ -179,10 +197,10 @@ pub fn signin_wait(server_url: &str, s: &SignIn) -> Result<String, String> {
             .send_json(serde_json::json!({ "device_code": s.device_code }));
         let mut resp = match resp {
             Ok(r) => r,
-            // a transient network blip should not abandon the whole attempt
             Err(ureq::Error::StatusCode(400)) => {
                 return Err("this sign-in request expired - try again".into())
             }
+            // a transient network blip should not abandon the whole attempt
             Err(_) => continue,
         };
         let v: serde_json::Value = match resp.body_mut().read_json() {
@@ -218,10 +236,9 @@ pub fn sync(config: &Config) -> Result<String, String> {
     // must stay silent until the user sets `token` (loopback dev servers are
     // exempt - the server's dev mode accepts tokenless ingest locally).
     if config.token.trim().is_empty() && !is_loopback(&config.server_url) {
-        return Err(format!(
-            "not configured: set `token` in {} (Edit Config in the menu)",
-            config_path().display()
-        ));
+        return Err("not signed in: use Sign In... in the menu (or run \
+                    `hotusage-collector signin`)"
+            .to_string());
     }
     let built: Vec<Built> = scan_all().into_iter().filter_map(build_session).collect();
     let total = built.len();
@@ -268,7 +285,18 @@ pub fn sync(config: &Config) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_loopback;
+    use super::{is_loopback, validated_url};
+
+    #[test]
+    fn approval_url_must_be_safe() {
+        assert!(validated_url("https://hotusage.ai/device?code=AB12-CD34").is_ok());
+        assert!(validated_url("http://127.0.0.1:8378/device?code=AB12-CD34").is_ok());
+        // plain http off-loopback, and anything a shell could split on
+        assert!(validated_url("http://evil.example/x").is_err());
+        assert!(validated_url("http://x&calc.exe").is_err());
+        assert!(validated_url("https://h/a b").is_err());
+        assert!(validated_url("").is_err());
+    }
 
     #[test]
     fn loopback_hosts_are_exact_matches() {
