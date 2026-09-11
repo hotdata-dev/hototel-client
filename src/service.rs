@@ -50,8 +50,8 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
-/// Best-effort "show this URL to the human". Falls back to printing, which
-/// is all a headless Linux box can do anyway.
+/// Best-effort browser launch. Silent on failure by design: every caller
+/// prints the URL as well, which is all a headless box can offer anyway.
 pub fn open_browser(url: &str) {
     #[cfg(target_os = "macos")]
     let _ = safe_command("open").arg(url).spawn();

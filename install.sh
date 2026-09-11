@@ -104,7 +104,14 @@ esac
 # A no-op when this machine is already signed in (upgrades, re-runs). Failure
 # is not fatal -- the binary is installed either way, so say how to retry.
 echo
-if "$dest/$BIN" signin; then
+if [ ! -t 1 ]; then
+  # no terminal: a CI or Dockerfile install has no browser and nobody to
+  # approve, and signin would block until the request expires
+  cat <<TXT
+installed. sign in when a browser is available:
+  $dest/$BIN signin
+TXT
+elif "$dest/$BIN" signin; then
   cat <<TXT
 
 done - usage syncs every 15 minutes from now on.
