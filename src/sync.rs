@@ -252,6 +252,11 @@ pub fn signout() -> Result<String, String> {
     save_config(&next).map_err(|e| format!("could not clear the local token: {e}"))?;
     match remote {
         Ok(_) => Ok("Signed out".into()),
+        // the credential is gone from this machine either way; say which half
+        // did not happen so a server-side problem is not read as offline
+        Err(ureq::Error::StatusCode(code)) => {
+            Ok(format!("Signed out locally (server said {code})"))
+        }
         Err(_) => Ok("Signed out locally (server unreachable)".into()),
     }
 }

@@ -21,6 +21,8 @@ enum UserEvent {
     SyncDone(String),
     SignInRequested,
     SignOutRequested,
+    /// (status line, whether the local token was actually cleared)
+    SignOutDone(String, bool),
     /// (status line, signed-in address if it succeeded)
     SignInDone(String, Option<String>),
 }
@@ -98,13 +100,17 @@ pub fn run() -> ! {
         match event {
             Event::NewEvents(StartCause::Init) => {
                 let status = MenuItem::new("Starting...", false, None);
+                let signed_in = sync::is_signed_in();
                 let user = MenuItem::new(
-                    format!("{} on {}", config.user_email, sync::hostname()),
+                    if signed_in {
+                        format!("{} on {}", config.user_email, sync::hostname())
+                    } else {
+                        format!("Not signed in on {}", sync::hostname())
+                    },
                     false,
                     None,
                 );
                 // exactly one of these is actionable at a time
-                let signed_in = sync::is_signed_in();
                 let sign_in = MenuItem::new("Sign In...", !signed_in, None);
                 let sign_out = MenuItem::new("Sign Out", signed_in, None);
                 let sync_now = MenuItem::new("Sync Now", true, None);
@@ -204,11 +210,28 @@ pub fn run() -> ! {
                 }
             }
             Event::UserEvent(UserEvent::SignOutRequested) => {
-                let msg = match sync::signout() {
-                    Ok(m) | Err(m) => m,
-                };
+                // off the event loop: revoking is a network call, and an
+                // unreachable server would otherwise freeze the menu
+                if let Some(item) = &status_item {
+                    item.set_text("Signing out...");
+                }
+                let proxy = sync_proxy.clone();
+                thread::spawn(move || {
+                    let ev = match sync::signout() {
+                        Ok(m) => UserEvent::SignOutDone(m, true),
+                        // the token is still on disk, so the menu must keep
+                        // saying signed in rather than lying about it
+                        Err(m) => UserEvent::SignOutDone(m, false),
+                    };
+                    let _ = proxy.send_event(ev);
+                });
+            }
+            Event::UserEvent(UserEvent::SignOutDone(msg, cleared)) => {
                 if let Some(item) = &status_item {
                     item.set_text(&msg);
+                }
+                if !cleared {
+                    return;
                 }
                 if let Some(item) = &user_item {
                     item.set_text(format!("Not signed in on {}", sync::hostname()));
