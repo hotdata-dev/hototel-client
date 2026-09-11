@@ -74,6 +74,14 @@ fn run_dump() -> ! {
 /// Browser sign-in for machines with no tray: prints the code, opens or prints
 /// the approval URL, and waits for the person to approve.
 fn run_signin() -> ! {
+    // an upgrade or a second run must not force the person to re-authorise
+    if sync::is_signed_in() {
+        println!(
+            "hotusage collector: already signed in as {} (run `signout` first to switch)",
+            sync::load_config().user_email
+        );
+        std::process::exit(0);
+    }
     let server = sync::load_config().server_url;
     let s = match sync::signin_start(&server) {
         Ok(s) => s,
@@ -83,11 +91,20 @@ fn run_signin() -> ! {
         }
     };
     println!(
-        "open this in a browser and check the code matches:\n  {}\n  code: {}\n\nwaiting for approval...",
+        "opening your browser to approve this machine.\nif it does not open, \
+         visit:\n  {}\n\ncheck the page shows this code: {}\n\nwaiting for approval...",
         s.verification_url, s.user_code
     );
+    service::open_browser(&s.verification_url);
     match sync::signin_wait(&server, &s) {
-        Ok(email) => println!("signed in as {email}"),
+        Ok(email) => {
+            println!("signed in as {email}");
+            // first data should land now, not in fifteen minutes
+            match sync::sync(&sync::load_config()) {
+                Ok(msg) => println!("hotusage collector: {msg}"),
+                Err(msg) => eprintln!("hotusage collector: first sync failed: {msg}"),
+            }
+        }
         Err(e) => {
             eprintln!("hotusage collector: {e}");
             std::process::exit(1);

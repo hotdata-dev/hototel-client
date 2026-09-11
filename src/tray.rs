@@ -27,12 +27,7 @@ enum UserEvent {
 }
 
 fn open_url(url: &str) {
-    #[cfg(target_os = "macos")]
-    let _ = crate::service::safe_command("open").arg(url).spawn();
-    #[cfg(target_os = "windows")]
-    let _ = crate::service::safe_command("cmd")
-        .args(["/C", "start", "", url])
-        .spawn();
+    crate::service::open_browser(url);
 }
 
 fn open_config() {

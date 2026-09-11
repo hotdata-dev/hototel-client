@@ -100,10 +100,19 @@ esac
 # the next steps rather than aborting under `set -e`.
 "$dest/$BIN" install || echo "note: agent registration failed (no desktop/systemd session?) - run '$dest/$BIN install' from a login session" >&2
 
-cat <<TXT
+# Sign in straight away: opens the browser, waits for approval, then syncs.
+# A no-op when this machine is already signed in (upgrades, re-runs). Failure
+# is not fatal -- the binary is installed either way, so say how to retry.
+echo
+if "$dest/$BIN" signin; then
+  cat <<TXT
 
-next: set your identity and the shared ingest token in
-  ~/.hotusage/collector.json      (server_url defaults to https://hotusage.ai)
-then sync immediately with:
-  $dest/$BIN --once
+done - usage syncs every 15 minutes from now on.
 TXT
+else
+  cat <<TXT
+
+sign-in did not complete. run this when you are ready:
+  $dest/$BIN signin
+TXT
+fi

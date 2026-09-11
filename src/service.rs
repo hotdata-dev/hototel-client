@@ -50,6 +50,17 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
+/// Best-effort "show this URL to the human". Falls back to printing, which
+/// is all a headless Linux box can do anyway.
+pub fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = safe_command("open").arg(url).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = safe_command("xdg-open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = safe_command("cmd").args(["/C", "start", "", url]).spawn();
+}
+
 #[cfg(target_os = "macos")]
 pub fn install() -> Result<String, String> {
     let exe = exe()?;

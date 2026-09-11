@@ -27,8 +27,10 @@ curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-collector/main
 ```
 
 That downloads the right release binary for the machine, puts it on PATH,
-registers the background agent (LaunchAgent / systemd user unit), and tells you
-to fill in `~/.hotusage/collector.json`.
+registers the background agent (LaunchAgent / systemd user unit), then opens
+your browser to sign in. Approve the machine and the first sync runs
+immediately — there is nothing to edit by hand. Re-running the installer to
+upgrade leaves an existing sign-in alone.
 
 Windows, or a manual install anywhere: download the archive for the machine
 from the latest [GitHub Release](https://github.com/hotdata-dev/hotusage-collector/releases),
