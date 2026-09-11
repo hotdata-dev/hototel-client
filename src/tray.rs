@@ -19,6 +19,9 @@ enum UserEvent {
     Menu(MenuEvent),
     SyncRequested,
     SyncDone(String),
+    SignInRequested,
+    /// (status line, signed-in address if it succeeded)
+    SignInDone(String, Option<String>),
 }
 
 fn open_url(url: &str) {
@@ -78,7 +81,10 @@ pub fn run() -> ! {
     let syncing = Arc::new(AtomicBool::new(false));
 
     let mut _tray: Option<TrayIcon> = None;
+    let signing_in = Arc::new(AtomicBool::new(false));
     let mut status_item: Option<MenuItem> = None;
+    let mut user_item: Option<MenuItem> = None;
+    let mut signin_id: Option<tray_icon::menu::MenuId> = None;
     let mut sync_id = None;
     let mut dash_id = None;
     let mut cfg_id = None;
@@ -93,6 +99,7 @@ pub fn run() -> ! {
                     false,
                     None,
                 );
+                let sign_in = MenuItem::new("Sign In...", true, None);
                 let sync_now = MenuItem::new("Sync Now", true, None);
                 let dashboard = MenuItem::new("Open Dashboard", true, None);
                 let edit_cfg = MenuItem::new("Edit Config", true, None);
@@ -101,16 +108,19 @@ pub fn run() -> ! {
                     &status,
                     &user,
                     &PredefinedMenuItem::separator(),
+                    &sign_in,
                     &sync_now,
                     &dashboard,
                     &edit_cfg,
                     &PredefinedMenuItem::separator(),
                     &PredefinedMenuItem::quit(Some("Quit hotusage")),
                 ]);
+                signin_id = Some(sign_in.id().clone());
                 sync_id = Some(sync_now.id().clone());
                 dash_id = Some(dashboard.id().clone());
                 cfg_id = Some(edit_cfg.id().clone());
                 status_item = Some(status);
+                user_item = Some(user);
                 let builder = TrayIconBuilder::new().with_menu(Box::new(menu));
                 #[cfg(target_os = "macos")]
                 let builder = builder.with_icon(flame_icon(0)).with_icon_as_template(true);
@@ -120,7 +130,9 @@ pub fn run() -> ! {
                 let _ = sync_proxy.send_event(UserEvent::SyncRequested);
             }
             Event::UserEvent(UserEvent::Menu(e)) => {
-                if Some(e.id()) == sync_id.as_ref() {
+                if Some(e.id()) == signin_id.as_ref() {
+                    let _ = sync_proxy.send_event(UserEvent::SignInRequested);
+                } else if Some(e.id()) == sync_id.as_ref() {
                     let _ = sync_proxy.send_event(UserEvent::SyncRequested);
                 } else if Some(e.id()) == dash_id.as_ref() {
                     open_url(&sync::load_config().server_url);
@@ -143,6 +155,51 @@ pub fn run() -> ! {
                         flag.store(false, Ordering::SeqCst);
                         let _ = proxy.send_event(UserEvent::SyncDone(msg));
                     });
+                }
+            }
+            Event::UserEvent(UserEvent::SignInRequested) => {
+                if !signing_in.swap(true, Ordering::SeqCst) {
+                    if let Some(item) = &status_item {
+                        item.set_text("Starting sign-in...");
+                    }
+                    let proxy = sync_proxy.clone();
+                    let flag = signing_in.clone();
+                    thread::spawn(move || {
+                        let server = sync::load_config().server_url;
+                        let ev = match sync::signin_start(&server) {
+                            Err(e) => UserEvent::SignInDone(e, None),
+                            Ok(s) => {
+                                // the browser carries the code, and the menu shows
+                                // the same one so it can be compared before approving
+                                open_url(&s.verification_url);
+                                let _ = proxy.send_event(UserEvent::SignInDone(
+                                    format!("Approve code {} in your browser", s.user_code),
+                                    None,
+                                ));
+                                match sync::signin_wait(&server, &s) {
+                                    Ok(email) => UserEvent::SignInDone(
+                                        format!("Signed in as {email}"),
+                                        Some(email),
+                                    ),
+                                    Err(e) => UserEvent::SignInDone(e, None),
+                                }
+                            }
+                        };
+                        flag.store(false, Ordering::SeqCst);
+                        let _ = proxy.send_event(ev);
+                    });
+                }
+            }
+            Event::UserEvent(UserEvent::SignInDone(msg, email)) => {
+                if let Some(item) = &status_item {
+                    item.set_text(&msg);
+                }
+                if let Some(email) = email {
+                    if let Some(item) = &user_item {
+                        item.set_text(format!("{} on {}", email, sync::hostname()));
+                    }
+                    // a fresh sign-in should show data without waiting a cycle
+                    let _ = sync_proxy.send_event(UserEvent::SyncRequested);
                 }
             }
             Event::UserEvent(UserEvent::SyncDone(msg)) => {
