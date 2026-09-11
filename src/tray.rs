@@ -20,6 +20,9 @@ enum UserEvent {
     SyncRequested,
     SyncDone(String),
     SignInRequested,
+    SignOutRequested,
+    /// (status line, whether the local token was actually cleared)
+    SignOutDone(String, bool),
     /// (status line, signed-in address if it succeeded)
     SignInDone(String, Option<String>),
 }
@@ -85,6 +88,9 @@ pub fn run() -> ! {
     let mut status_item: Option<MenuItem> = None;
     let mut user_item: Option<MenuItem> = None;
     let mut signin_id: Option<tray_icon::menu::MenuId> = None;
+    let mut signout_id: Option<tray_icon::menu::MenuId> = None;
+    let mut signin_item: Option<MenuItem> = None;
+    let mut signout_item: Option<MenuItem> = None;
     let mut sync_id = None;
     let mut dash_id = None;
     let mut cfg_id = None;
@@ -94,12 +100,19 @@ pub fn run() -> ! {
         match event {
             Event::NewEvents(StartCause::Init) => {
                 let status = MenuItem::new("Starting...", false, None);
+                let signed_in = sync::is_signed_in();
                 let user = MenuItem::new(
-                    format!("{} on {}", config.user_email, sync::hostname()),
+                    if signed_in {
+                        format!("{} on {}", config.user_email, sync::hostname())
+                    } else {
+                        format!("Not signed in on {}", sync::hostname())
+                    },
                     false,
                     None,
                 );
-                let sign_in = MenuItem::new("Sign In...", true, None);
+                // exactly one of these is actionable at a time
+                let sign_in = MenuItem::new("Sign In...", !signed_in, None);
+                let sign_out = MenuItem::new("Sign Out", signed_in, None);
                 let sync_now = MenuItem::new("Sync Now", true, None);
                 let dashboard = MenuItem::new("Open Dashboard", true, None);
                 let edit_cfg = MenuItem::new("Edit Config", true, None);
@@ -109,6 +122,7 @@ pub fn run() -> ! {
                     &user,
                     &PredefinedMenuItem::separator(),
                     &sign_in,
+                    &sign_out,
                     &sync_now,
                     &dashboard,
                     &edit_cfg,
@@ -116,6 +130,9 @@ pub fn run() -> ! {
                     &PredefinedMenuItem::quit(Some("Quit hotusage")),
                 ]);
                 signin_id = Some(sign_in.id().clone());
+                signout_id = Some(sign_out.id().clone());
+                signin_item = Some(sign_in);
+                signout_item = Some(sign_out);
                 sync_id = Some(sync_now.id().clone());
                 dash_id = Some(dashboard.id().clone());
                 cfg_id = Some(edit_cfg.id().clone());
@@ -132,6 +149,8 @@ pub fn run() -> ! {
             Event::UserEvent(UserEvent::Menu(e)) => {
                 if Some(e.id()) == signin_id.as_ref() {
                     let _ = sync_proxy.send_event(UserEvent::SignInRequested);
+                } else if Some(e.id()) == signout_id.as_ref() {
+                    let _ = sync_proxy.send_event(UserEvent::SignOutRequested);
                 } else if Some(e.id()) == sync_id.as_ref() {
                     let _ = sync_proxy.send_event(UserEvent::SyncRequested);
                 } else if Some(e.id()) == dash_id.as_ref() {
@@ -190,6 +209,40 @@ pub fn run() -> ! {
                     });
                 }
             }
+            Event::UserEvent(UserEvent::SignOutRequested) => {
+                // off the event loop: revoking is a network call, and an
+                // unreachable server would otherwise freeze the menu
+                if let Some(item) = &status_item {
+                    item.set_text("Signing out...");
+                }
+                let proxy = sync_proxy.clone();
+                thread::spawn(move || {
+                    let ev = match sync::signout() {
+                        Ok(m) => UserEvent::SignOutDone(m, true),
+                        // the token is still on disk, so the menu must keep
+                        // saying signed in rather than lying about it
+                        Err(m) => UserEvent::SignOutDone(m, false),
+                    };
+                    let _ = proxy.send_event(ev);
+                });
+            }
+            Event::UserEvent(UserEvent::SignOutDone(msg, cleared)) => {
+                if let Some(item) = &status_item {
+                    item.set_text(&msg);
+                }
+                if !cleared {
+                    return;
+                }
+                if let Some(item) = &user_item {
+                    item.set_text(format!("Not signed in on {}", sync::hostname()));
+                }
+                if let Some(item) = &signin_item {
+                    item.set_enabled(true);
+                }
+                if let Some(item) = &signout_item {
+                    item.set_enabled(false);
+                }
+            }
             Event::UserEvent(UserEvent::SignInDone(msg, email)) => {
                 if let Some(item) = &status_item {
                     item.set_text(&msg);
@@ -197,6 +250,12 @@ pub fn run() -> ! {
                 if let Some(email) = email {
                     if let Some(item) = &user_item {
                         item.set_text(format!("{} on {}", email, sync::hostname()));
+                    }
+                    if let Some(item) = &signin_item {
+                        item.set_enabled(false);
+                    }
+                    if let Some(item) = &signout_item {
+                        item.set_enabled(true);
                     }
                     // a fresh sign-in should show data without waiting a cycle
                     let _ = sync_proxy.send_event(UserEvent::SyncRequested);

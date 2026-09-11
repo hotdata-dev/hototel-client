@@ -228,6 +228,39 @@ pub fn signin_wait(server_url: &str, s: &SignIn) -> Result<String, String> {
     Err("sign-in timed out - try again".into())
 }
 
+/// True when this collector holds a credential (so the menu can offer Sign
+/// Out rather than Sign In).
+pub fn is_signed_in() -> bool {
+    !load_config().token.trim().is_empty()
+}
+
+/// Revoke this collector's token server-side, then forget it locally. The
+/// local half happens even if the server cannot be reached -- the point of
+/// signing out is that this machine stops reporting.
+pub fn signout() -> Result<String, String> {
+    let cfg = load_config();
+    if cfg.token.trim().is_empty() {
+        return Err("not signed in".into());
+    }
+    let url = format!("{}/api/collector/signout", cfg.server_url.trim_end_matches('/'));
+    let remote = agent(30)
+        .post(&url)
+        .header("Authorization", &format!("Bearer {}", cfg.token))
+        .send_empty();
+    let mut next = cfg.clone();
+    next.token = String::new();
+    save_config(&next).map_err(|e| format!("could not clear the local token: {e}"))?;
+    match remote {
+        Ok(_) => Ok("Signed out".into()),
+        // the credential is gone from this machine either way; say which half
+        // did not happen so a server-side problem is not read as offline
+        Err(ureq::Error::StatusCode(code)) => {
+            Ok(format!("Signed out locally (server said {code})"))
+        }
+        Err(_) => Ok("Signed out locally (server unreachable)".into()),
+    }
+}
+
 /// Parse local history, send changed sessions to the server.
 /// Returns a short human status string, Err(status) on failure.
 pub fn sync(config: &Config) -> Result<String, String> {
