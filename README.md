@@ -68,8 +68,8 @@ cargo build --release
 ./target/release/hotusage-collector --dump     # print parsed sessions as JSON (debug)
 ```
 
-Tray menu (macOS/Windows): last-sync status, Sign In..., Sync Now,
-Open Dashboard, Edit Config, Quit.
+Tray menu (macOS/Windows): last-sync status, Sign In... / Sign Out (whichever
+applies), Sync Now, Open Dashboard, Edit Config, Quit.
 
 ## Install as a continuous daemon
 
@@ -101,6 +101,11 @@ hotusage-collector signin
 
 which prints the URL and the code and waits for approval. The token is written
 to `~/.hotusage/collector.json`; sign in again any time to replace it.
+
+**Sign Out** (or `hotusage-collector signout`) revokes that token on the server
+and clears it locally, so the machine stops reporting. The local half happens
+even when the server is unreachable; other machines you signed in stay signed
+in, since each holds its own token.
 
 ## Configuration
 

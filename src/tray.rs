@@ -20,6 +20,7 @@ enum UserEvent {
     SyncRequested,
     SyncDone(String),
     SignInRequested,
+    SignOutRequested,
     /// (status line, signed-in address if it succeeded)
     SignInDone(String, Option<String>),
 }
@@ -85,6 +86,9 @@ pub fn run() -> ! {
     let mut status_item: Option<MenuItem> = None;
     let mut user_item: Option<MenuItem> = None;
     let mut signin_id: Option<tray_icon::menu::MenuId> = None;
+    let mut signout_id: Option<tray_icon::menu::MenuId> = None;
+    let mut signin_item: Option<MenuItem> = None;
+    let mut signout_item: Option<MenuItem> = None;
     let mut sync_id = None;
     let mut dash_id = None;
     let mut cfg_id = None;
@@ -99,7 +103,10 @@ pub fn run() -> ! {
                     false,
                     None,
                 );
-                let sign_in = MenuItem::new("Sign In...", true, None);
+                // exactly one of these is actionable at a time
+                let signed_in = sync::is_signed_in();
+                let sign_in = MenuItem::new("Sign In...", !signed_in, None);
+                let sign_out = MenuItem::new("Sign Out", signed_in, None);
                 let sync_now = MenuItem::new("Sync Now", true, None);
                 let dashboard = MenuItem::new("Open Dashboard", true, None);
                 let edit_cfg = MenuItem::new("Edit Config", true, None);
@@ -109,6 +116,7 @@ pub fn run() -> ! {
                     &user,
                     &PredefinedMenuItem::separator(),
                     &sign_in,
+                    &sign_out,
                     &sync_now,
                     &dashboard,
                     &edit_cfg,
@@ -116,6 +124,9 @@ pub fn run() -> ! {
                     &PredefinedMenuItem::quit(Some("Quit hotusage")),
                 ]);
                 signin_id = Some(sign_in.id().clone());
+                signout_id = Some(sign_out.id().clone());
+                signin_item = Some(sign_in);
+                signout_item = Some(sign_out);
                 sync_id = Some(sync_now.id().clone());
                 dash_id = Some(dashboard.id().clone());
                 cfg_id = Some(edit_cfg.id().clone());
@@ -132,6 +143,8 @@ pub fn run() -> ! {
             Event::UserEvent(UserEvent::Menu(e)) => {
                 if Some(e.id()) == signin_id.as_ref() {
                     let _ = sync_proxy.send_event(UserEvent::SignInRequested);
+                } else if Some(e.id()) == signout_id.as_ref() {
+                    let _ = sync_proxy.send_event(UserEvent::SignOutRequested);
                 } else if Some(e.id()) == sync_id.as_ref() {
                     let _ = sync_proxy.send_event(UserEvent::SyncRequested);
                 } else if Some(e.id()) == dash_id.as_ref() {
@@ -190,6 +203,23 @@ pub fn run() -> ! {
                     });
                 }
             }
+            Event::UserEvent(UserEvent::SignOutRequested) => {
+                let msg = match sync::signout() {
+                    Ok(m) | Err(m) => m,
+                };
+                if let Some(item) = &status_item {
+                    item.set_text(&msg);
+                }
+                if let Some(item) = &user_item {
+                    item.set_text(format!("Not signed in on {}", sync::hostname()));
+                }
+                if let Some(item) = &signin_item {
+                    item.set_enabled(true);
+                }
+                if let Some(item) = &signout_item {
+                    item.set_enabled(false);
+                }
+            }
             Event::UserEvent(UserEvent::SignInDone(msg, email)) => {
                 if let Some(item) = &status_item {
                     item.set_text(&msg);
@@ -197,6 +227,12 @@ pub fn run() -> ! {
                 if let Some(email) = email {
                     if let Some(item) = &user_item {
                         item.set_text(format!("{} on {}", email, sync::hostname()));
+                    }
+                    if let Some(item) = &signin_item {
+                        item.set_enabled(false);
+                    }
+                    if let Some(item) = &signout_item {
+                        item.set_enabled(true);
                     }
                     // a fresh sign-in should show data without waiting a cycle
                     let _ = sync_proxy.send_event(UserEvent::SyncRequested);
