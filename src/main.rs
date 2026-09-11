@@ -7,6 +7,8 @@
 //!   hotusage-collector --daemon     headless sync loop (any OS)
 //!   hotusage-collector --once       one-shot sync, then exit
 //!   hotusage-collector --dump       print parsed sessions as JSON (debug)
+//!   hotusage-collector signin       sign in through the browser (Linux/headless;
+//!                                   the tray app has a Sign In... menu item)
 //!   hotusage-collector install      register as a login/background service
 //!   hotusage-collector uninstall    remove that registration
 //!
@@ -68,6 +70,31 @@ fn run_dump() -> ! {
     std::process::exit(0);
 }
 
+/// Browser sign-in for machines with no tray: prints the code, opens or prints
+/// the approval URL, and waits for the person to approve.
+fn run_signin() -> ! {
+    let server = sync::load_config().server_url;
+    let s = match sync::signin_start(&server) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hotusage collector: {e}");
+            std::process::exit(1);
+        }
+    };
+    println!(
+        "open this in a browser and check the code matches:\n  {}\n  code: {}\n\nwaiting for approval...",
+        s.verification_url, s.user_code
+    );
+    match sync::signin_wait(&server, &s) {
+        Ok(email) => println!("signed in as {email}"),
+        Err(e) => {
+            eprintln!("hotusage collector: {e}");
+            std::process::exit(1);
+        }
+    }
+    std::process::exit(0);
+}
+
 fn run_daemon() -> ! {
     let config = sync::load_config();
     println!(
@@ -105,6 +132,7 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        "signin" => run_signin(),
         "--once" => run_once(),
         "--dump" => run_dump(),
         "--daemon" => run_daemon(),
@@ -117,7 +145,7 @@ fn main() {
         other => {
             eprintln!(
                 "unknown argument '{other}'\n\
-                 usage: hotusage-collector [--once | --dump | --daemon | install | uninstall]"
+                 usage: hotusage-collector [--once | --dump | --daemon | signin | install | uninstall]"
             );
             std::process::exit(2);
         }

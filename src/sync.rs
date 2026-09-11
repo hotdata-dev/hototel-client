@@ -84,6 +84,13 @@ pub fn load_config() -> Config {
     cfg
 }
 
+pub fn save_config(cfg: &Config) -> std::io::Result<()> {
+    fs::create_dir_all(config_dir())?;
+    let tmp = config_path().with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_string_pretty(cfg).unwrap())?;
+    fs::rename(tmp, config_path())
+}
+
 fn load_state() -> HashMap<String, String> {
     fs::read_to_string(state_path())
         .ok()
@@ -116,6 +123,91 @@ fn is_loopback(url: &str) -> bool {
         host.rsplit_once(':').map_or(host, |(h, _)| h)
     };
     matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+}
+
+fn agent(secs: u64) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(secs)))
+        .build()
+        .into()
+}
+
+/// A sign-in attempt: the code to show the person, and where to approve it.
+pub struct SignIn {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_url: String,
+    pub interval: u64,
+    pub expires_in: u64,
+}
+
+/// Ask the server to start a sign-in. The caller opens `verification_url` and
+/// then polls; nothing is stored until the person approves in the browser.
+pub fn signin_start(server_url: &str) -> Result<SignIn, String> {
+    let url = format!("{}/api/device/start", server_url.trim_end_matches('/'));
+    let mut resp = agent(30)
+        .post(&url)
+        .send_json(serde_json::json!({ "hostname": hostname() }))
+        .map_err(|e| format!("could not reach {server_url}: {e}"))?;
+    let v: serde_json::Value = resp
+        .body_mut()
+        .read_json()
+        .map_err(|e| format!("bad response from server: {e}"))?;
+    let get = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let device_code = get("device_code");
+    if device_code.is_empty() {
+        return Err("server did not start a sign-in".into());
+    }
+    Ok(SignIn {
+        device_code,
+        user_code: get("user_code"),
+        verification_url: get("verification_url"),
+        interval: v.get("interval").and_then(|x| x.as_u64()).unwrap_or(3).max(1),
+        expires_in: v.get("expires_in").and_then(|x| x.as_u64()).unwrap_or(600),
+    })
+}
+
+/// Block until the person approves (or the request expires), then persist the
+/// token and the address it is bound to. Returns the signed-in address.
+pub fn signin_wait(server_url: &str, s: &SignIn) -> Result<String, String> {
+    let url = format!("{}/api/device/poll", server_url.trim_end_matches('/'));
+    let deadline = std::time::Instant::now() + Duration::from_secs(s.expires_in);
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_secs(s.interval));
+        let resp = agent(30)
+            .post(&url)
+            .send_json(serde_json::json!({ "device_code": s.device_code }));
+        let mut resp = match resp {
+            Ok(r) => r,
+            // a transient network blip should not abandon the whole attempt
+            Err(ureq::Error::StatusCode(400)) => {
+                return Err("this sign-in request expired - try again".into())
+            }
+            Err(_) => continue,
+        };
+        let v: serde_json::Value = match resp.body_mut().read_json() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        match v.get("status").and_then(|x| x.as_str()).unwrap_or("") {
+            "approved" => {
+                let email = v.get("user_email").and_then(|x| x.as_str()).unwrap_or("");
+                let token = v.get("token").and_then(|x| x.as_str()).unwrap_or("");
+                if email.is_empty() || token.is_empty() {
+                    return Err("server approved the sign-in without a token".into());
+                }
+                let mut cfg = load_config();
+                cfg.server_url = server_url.trim_end_matches('/').to_string();
+                cfg.user_email = email.to_string();
+                cfg.token = token.to_string();
+                save_config(&cfg).map_err(|e| format!("could not save config: {e}"))?;
+                return Ok(email.to_string());
+            }
+            "expired" => return Err("this sign-in request expired - try again".into()),
+            _ => {}
+        }
+    }
+    Err("sign-in timed out - try again".into())
 }
 
 /// Parse local history, send changed sessions to the server.
@@ -156,11 +248,7 @@ pub fn sync(config: &Config) -> Result<String, String> {
     });
 
     let url = format!("{}/ingest", config.server_url.trim_end_matches('/'));
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(120)))
-        .build()
-        .into();
-    let resp = agent
+    let resp = agent(120)
         .post(&url)
         .header("Authorization", &format!("Bearer {}", config.token))
         .send_json(&payload);

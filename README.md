@@ -88,6 +88,20 @@ The registration points at the binary's current path - move the binary,
 re-run `install`. CI (`.github/workflows/build.yml`) builds all three OS
 targets and uploads artifacts.
 
+## Sign in
+
+The tray app's **Sign In...** item opens your browser, you log in to hotusage
+and confirm that the code on the page matches the one in the menu, and the
+collector receives a token bound to your account — no shared secret to copy.
+Headless machines (Linux, servers) do the same with:
+
+```bash
+hotusage-collector signin
+```
+
+which prints the URL and the code and waits for approval. The token is written
+to `~/.hotusage/collector.json`; sign in again any time to replace it.
+
 ## Configuration
 
 First run writes `~/.hotusage/collector.json`:
