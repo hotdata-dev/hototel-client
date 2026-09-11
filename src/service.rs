@@ -50,6 +50,17 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
+/// Best-effort browser launch. Silent on failure by design: every caller
+/// prints the URL as well, which is all a headless box can offer anyway.
+pub fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = safe_command("open").arg(url).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = safe_command("xdg-open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = safe_command("cmd").args(["/C", "start", "", url]).spawn();
+}
+
 #[cfg(target_os = "macos")]
 pub fn install() -> Result<String, String> {
     let exe = exe()?;

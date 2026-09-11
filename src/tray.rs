@@ -20,6 +20,9 @@ enum UserEvent {
     SyncDone(String),
     SignInRequested,
     SignOutRequested,
+    /// re-read the on-disk identity: the CLI (or the installer) can sign this
+    /// machine in or out while the tray is already running
+    RefreshIdentity,
     /// (status line, whether the local token was actually cleared)
     SignOutDone(String, bool),
     /// (status line, signed-in address if it succeeded)
@@ -27,12 +30,7 @@ enum UserEvent {
 }
 
 fn open_url(url: &str) {
-    #[cfg(target_os = "macos")]
-    let _ = crate::service::safe_command("open").arg(url).spawn();
-    #[cfg(target_os = "windows")]
-    let _ = crate::service::safe_command("cmd")
-        .args(["/C", "start", "", url])
-        .spawn();
+    crate::service::open_browser(url);
 }
 
 fn open_config() {
@@ -74,6 +72,14 @@ pub fn run() -> ! {
         let _ = proxy.send_event(UserEvent::Menu(event));
     }));
 
+    // identity poll: cheap config read, so a sign-in performed by
+    // `hotusage-collector signin` shows up in the menu within seconds
+    let id_proxy = event_loop.create_proxy();
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(10));
+        let _ = id_proxy.send_event(UserEvent::RefreshIdentity);
+    });
+
     // periodic sync timer (plus one initial sync fired from Init below)
     let timer_proxy = event_loop.create_proxy();
     thread::spawn(move || loop {
@@ -92,6 +98,7 @@ pub fn run() -> ! {
     let mut signout_id: Option<tray_icon::menu::MenuId> = None;
     let mut signin_item: Option<MenuItem> = None;
     let mut signout_item: Option<MenuItem> = None;
+    let mut last_signed_in = sync::is_signed_in();
     let mut sync_id = None;
     let mut dash_id = None;
     let mut cfg_id = None;
@@ -210,6 +217,29 @@ pub fn run() -> ! {
                     });
                 }
             }
+            Event::UserEvent(UserEvent::RefreshIdentity) => {
+                let cfg = sync::load_config();
+                let signed_in = !cfg.token.trim().is_empty();
+                if signed_in != last_signed_in {
+                    last_signed_in = signed_in;
+                    if let Some(item) = &user_item {
+                        item.set_text(if signed_in {
+                            format!("{} on {}", cfg.user_email, sync::hostname())
+                        } else {
+                            format!("Not signed in on {}", sync::hostname())
+                        });
+                    }
+                    if let Some(item) = &signin_item {
+                        item.set_enabled(!signed_in);
+                    }
+                    if let Some(item) = &signout_item {
+                        item.set_enabled(signed_in);
+                    }
+                    if signed_in {
+                        let _ = sync_proxy.send_event(UserEvent::SyncRequested);
+                    }
+                }
+            }
             Event::UserEvent(UserEvent::SignOutRequested) => {
                 // off the event loop: revoking is a network call, and an
                 // unreachable server would otherwise freeze the menu
@@ -243,6 +273,7 @@ pub fn run() -> ! {
                 if let Some(item) = &signout_item {
                     item.set_enabled(false);
                 }
+                last_signed_in = false;
             }
             Event::UserEvent(UserEvent::SignInDone(msg, email)) => {
                 if let Some(item) = &status_item {
@@ -258,6 +289,7 @@ pub fn run() -> ! {
                     if let Some(item) = &signout_item {
                         item.set_enabled(true);
                     }
+                    last_signed_in = true;
                     // a fresh sign-in should show data without waiting a cycle
                     let _ = sync_proxy.send_event(UserEvent::SyncRequested);
                 }
