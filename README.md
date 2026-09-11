@@ -30,54 +30,33 @@ That downloads the right release binary for the machine, puts it on PATH,
 registers the background agent (LaunchAgent / systemd user unit), and tells you
 to fill in `~/.hotusage/collector.json`.
 
-Or grab an installer from the latest
-[GitHub Release](https://github.com/hotdata-dev/hotusage-collector/releases):
+Windows, or a manual install anywhere: download the archive for the machine
+from the latest [GitHub Release](https://github.com/hotdata-dev/hotusage-collector/releases),
+unpack it, put `hotusage-collector` somewhere on PATH, and run:
 
-| OS | Installer | What it does |
-|----|-----------|--------------|
-| macOS | `...-macos-universal.app.zip` | unzip, drag to Applications, launch. Releases built with signing credentials are Developer ID signed and notarized, so Gatekeeper lets them open normally; an unsigned release (see below) is refused on first launch and needs System Settings -> Privacy & Security -> Open Anyway. Then `hotusage-collector install` from the app binary, or use the raw tar.gz + `install` for the LaunchAgent. |
-| Windows | `...-windows-x86_64-setup.exe` | per-user install (no admin); registers autostart and launches the tray app |
-| Linux | `...-linux-amd64.deb` | `sudo dpkg -i ...`; then per user: `hotusage-collector install` (systemd user daemon) |
-
-Raw binaries (`.tar.gz` / `.zip`) are attached to every release too, and every
-CI run uploads per-OS build artifacts. Releases are cut by pushing a `v*` tag
-matching `Cargo.toml`'s version.
-
-### macOS code signing
-
-The release workflow signs and notarizes the macOS binary and `.app` when these
-repository secrets are present, and ships unsigned builds (with a CI warning)
-when none of them are — so a fork or a pre-certificate release still works.
-Setting the certificate without the notarization key fails the build, because a
-signed-but-un-notarized download is refused by Gatekeeper just like an unsigned
-one:
-
-| Secret | What it is |
-|--------|------------|
-| `MACOS_CERT_P12` | base64 of a **Developer ID Application** certificate exported as `.p12` (requires the $99/yr Apple Developer Program; a free account cannot issue one) |
-| `MACOS_CERT_PASSWORD` | the password set when exporting that `.p12` |
-| `MACOS_SIGN_IDENTITY` | the identity string, e.g. `Developer ID Application: HotData Inc (TEAMID)` |
-| `APPLE_API_KEY_P8` | base64 of an App Store Connect API key (`.p8`) with the Developer role, used for notarization |
-| `APPLE_API_KEY_ID` | that key's ID |
-| `APPLE_API_ISSUER_ID` | the issuer UUID from App Store Connect |
-
-Producing the first three, once enrolled:
-
-```bash
-# in Keychain Access: request a cert from a CA, upload the CSR at
-# developer.apple.com -> Certificates -> Developer ID Application, download and
-# double-click the .cer, then export the resulting identity as cert.p12
-base64 -i cert.p12 | pbcopy          # -> MACOS_CERT_P12
-security find-identity -v -p codesigning   # -> MACOS_SIGN_IDENTITY
+```
+hotusage-collector install
 ```
 
-Notarization staples a ticket to the `.app`, so it verifies offline. A bare CLI
-executable cannot carry a stapled ticket; the `.tar.gz` binary is signed and
-notarized but checked online the first time it runs. `install.sh` also clears
-the quarantine attribute, which covers unsigned releases and offline machines.
+That registers the background agent for the current user (LaunchAgent on macOS,
+systemd user unit on Linux, `Run` key on Windows). Releases carry one archive
+per platform and nothing else:
 
-Windows SmartScreen is a separate problem needing its own (OV/EV) certificate;
-the `.exe` is currently unsigned.
+| OS | Archive |
+|----|---------|
+| macOS | `...-macos-universal.tar.gz` (Apple silicon + Intel) |
+| Linux | `...-linux-x86_64.tar.gz` (glibc 2.35+) |
+| Windows | `...-windows-x86_64.zip` |
+
+There are no `.app`, `.deb` or `.exe` installers to maintain, and the binaries
+are unsigned on purpose: `curl` and `tar` do not set the macOS quarantine
+attribute, so Gatekeeper never inspects a binary installed this way. A browser
+download would be quarantined -- if you fetch an archive by hand in Safari or
+Chrome, clear it with `xattr -d com.apple.quarantine hotusage-collector` (or
+approve it once under System Settings -> Privacy & Security).
+
+Every CI run also uploads per-OS build artifacts. Releases are cut by pushing a
+`v*` tag matching `Cargo.toml`'s version.
 
 ## Build & run
 

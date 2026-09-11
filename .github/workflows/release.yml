@@ -1,8 +1,13 @@
 name: release
 
-# Tag v* -> build binaries + installers for every OS and attach them to a
-# GitHub Release. workflow_dispatch builds the same artifacts without
-# publishing a release (grab them from the run's artifacts).
+# Tag v* -> build the binary for every OS and attach it to a GitHub Release.
+# workflow_dispatch builds the same archives without publishing a release
+# (grab them from the run's artifacts).
+#
+# Deliberately just binaries: install.sh downloads the right archive, drops the
+# binary on PATH and registers the background agent. No .app bundle, no .deb, no
+# Windows installer -- and so no code signing either, since curl-installed files
+# are never quarantined and Gatekeeper never sees them.
 on:
   push:
     tags: ["v*"]
@@ -13,22 +18,12 @@ permissions:
 
 jobs:
   package:
-    # Signing credentials, surfaced as env so step-level `if:` can test them.
-    # Absent (e.g. on a fork, or before the certificate is bought) every signing
-    # step is skipped and the release is simply unsigned, as it was before.
-    env:
-      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-      APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
-          # 22.04 keeps the .deb's glibc floor low (2.35) for older distros
+          # 22.04 keeps the glibc floor low (2.35) for older distros
           - os: ubuntu-22.04
           - os: windows-latest
     runs-on: ${{ matrix.os }}
@@ -51,10 +46,10 @@ jobs:
             exit 1
           fi
 
-      # ---------------- macOS: universal binary, .app bundle zip + tar.gz ----
-      - name: Build (macOS universal)
+      - name: Build & archive (macOS universal)
         if: runner.os == 'macOS'
         run: |
+          V="${{ steps.v.outputs.version }}"
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
           cargo build --release --target aarch64-apple-darwin
           cargo build --release --target x86_64-apple-darwin
@@ -62,138 +57,24 @@ jobs:
           lipo -create -output dist/hotusage-collector \
             target/aarch64-apple-darwin/release/hotusage-collector \
             target/x86_64-apple-darwin/release/hotusage-collector
-      - name: Build the .app bundle (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          V="${{ steps.v.outputs.version }}"
-          APP="dist/hotusage collector.app"
-          mkdir -p "$APP/Contents/MacOS"
-          sed "s/__VERSION__/$V/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
-          cp dist/hotusage-collector "$APP/Contents/MacOS/hotusage-collector"
-
-      # Unsigned downloads trip Gatekeeper on every teammate's machine. Signing
-      # with a Developer ID and notarizing is the only thing that clears it --
-      # ad-hoc signing does not. Skipped wholesale when the secrets are absent.
-      - name: Warn when signing is not configured (macOS)
-        if: runner.os == 'macOS' && env.MACOS_CERT_P12 == ''
-        run: |
-          echo "::warning::MACOS_CERT_P12 is not set - shipping UNSIGNED macOS binaries. \
-          Teammates will have to clear Gatekeeper by hand (Privacy & Security -> Open Anyway)."
-
-      # A signed but un-notarized download is refused by Gatekeeper exactly like
-      # an unsigned one, so half-configured credentials are a hard error rather
-      # than a release that looks signed and still fails on every machine.
-      - name: Signing credentials must be complete (macOS)
-        if: runner.os == 'macOS' && env.MACOS_CERT_P12 != '' && env.APPLE_API_KEY_P8 == ''
-        run: |
-          echo "MACOS_CERT_P12 is set but APPLE_API_KEY_P8 is not: the build would be \
-          signed without being notarized, which Gatekeeper still rejects. Set the \
-          notarization secrets (APPLE_API_KEY_P8 / _KEY_ID / _ISSUER_ID) or unset the \
-          certificate to ship an unsigned release." >&2
-          exit 1
-
-      - name: Import the Developer ID certificate (macOS)
-        if: runner.os == 'macOS' && env.MACOS_CERT_P12 != ''
-        run: |
-          # a throwaway keychain, unlocked for this job only
-          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
-          PASS=$(uuidgen)
-          security create-keychain -p "$PASS" "$KEYCHAIN"
-          security set-keychain-settings -lut 3600 "$KEYCHAIN"
-          security unlock-keychain -p "$PASS" "$KEYCHAIN"
-          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
-            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
-          rm -f "$RUNNER_TEMP/cert.p12"
-          # let codesign use the key without an interactive prompt
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "$PASS" "$KEYCHAIN" >/dev/null
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
-          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
-
-      - name: Sign (macOS)
-        if: runner.os == 'macOS' && env.MACOS_CERT_P12 != ''
-        run: |
-          APP="dist/hotusage collector.app"
-          # --options runtime (hardened runtime) and a secure timestamp are both
-          # required for notarization to pass
-          sign() { codesign --force --options runtime --timestamp \
-                     --sign "$MACOS_SIGN_IDENTITY" "$@"; }
-          sign "dist/hotusage-collector"
-          sign "$APP/Contents/MacOS/hotusage-collector"
-          sign "$APP"
-          codesign --verify --strict --verbose=2 "$APP"
-          codesign --verify --strict --verbose=2 "dist/hotusage-collector"
-
-      - name: Notarize (macOS)
-        if: runner.os == 'macOS' && env.MACOS_CERT_P12 != '' && env.APPLE_API_KEY_P8 != ''
-        run: |
-          V="${{ steps.v.outputs.version }}"
-          APP="dist/hotusage collector.app"
-          echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/key.p8"
-          # notarytool can exit 0 on an Invalid submission, so assert the status
-          notarize() {
-            out=$(xcrun notarytool submit "$1" --wait \
-              --key "$RUNNER_TEMP/key.p8" --key-id "$APPLE_API_KEY_ID" \
-              --issuer "$APPLE_API_ISSUER_ID")
-            echo "$out"
-            echo "$out" | grep -q "status: Accepted" || {
-              echo "notarization of $1 was not Accepted" >&2
-              exit 1
-            }
-          }
-          # notarytool takes an archive, not a bare executable
-          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/app.zip"
-          notarize "$RUNNER_TEMP/app.zip"
-          ditto -c -k "dist/hotusage-collector" "$RUNNER_TEMP/bin.zip"
-          notarize "$RUNNER_TEMP/bin.zip"
-          rm -f "$RUNNER_TEMP/key.p8" "$RUNNER_TEMP/app.zip" "$RUNNER_TEMP/bin.zip"
-          # Only a bundle can carry a stapled ticket; a bare CLI binary is checked
-          # online instead, which is why the tar.gz below is signed but unstapled.
-          xcrun stapler staple "$APP"
-          xcrun stapler validate "$APP"
-
-      - name: Archive (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          V="${{ steps.v.outputs.version }}"
-          APP="dist/hotusage collector.app"
-          ditto -c -k --keepParent "$APP" "dist/hotusage-collector-$V-macos-universal.app.zip"
           tar -C dist -czf "dist/hotusage-collector-$V-macos-universal.tar.gz" hotusage-collector
-          rm -rf "$APP" dist/hotusage-collector
+          rm -f dist/hotusage-collector
 
-      - name: Remove the signing keychain (macOS)
-        if: always() && runner.os == 'macOS' && env.KEYCHAIN != ''
-        run: security delete-keychain "$KEYCHAIN" || true
-
-      # ---------------- Linux: .deb + tar.gz ---------------------------------
-      - name: Build & package (Linux)
+      - name: Build & archive (Linux)
         if: runner.os == 'Linux'
         run: |
           V="${{ steps.v.outputs.version }}"
           cargo build --release
-          mkdir -p dist deb/DEBIAN deb/usr/bin
-          cp target/release/hotusage-collector deb/usr/bin/
-          sed "s/__VERSION__/$V/g" packaging/linux/control > deb/DEBIAN/control
-          dpkg-deb --build --root-owner-group deb "dist/hotusage-collector-$V-linux-amd64.deb"
+          mkdir -p dist
           tar -C target/release -czf "dist/hotusage-collector-$V-linux-x86_64.tar.gz" hotusage-collector
 
-      # ---------------- Windows: Inno Setup installer + zip ------------------
-      - name: Build (Windows)
-        if: runner.os == 'Windows'
-        run: cargo build --release
-      - name: Package (Windows)
+      - name: Build & archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $V = "${{ steps.v.outputs.version }}"
+          cargo build --release
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/hotusage-collector.exe packaging/windows/
-          # x64compatible needs Inno Setup >= 6.3; upgrade unconditionally
-          # (installs when absent) instead of trusting whatever the image has
-          choco upgrade innosetup -y --no-progress
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          & $iscc "/DVersion=$V" "/Odist" "/Fhotusage-collector-$V-windows-x86_64-setup" packaging/windows/installer.iss
           Compress-Archive -Path target/release/hotusage-collector.exe -DestinationPath "dist/hotusage-collector-$V-windows-x86_64.zip"
 
       - uses: actions/upload-artifact@v4
