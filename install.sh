@@ -43,7 +43,9 @@ curl -fsSL -o "$tmp/$asset" \
 tar -xzf "$tmp/$asset" -C "$tmp"
 [ -f "$tmp/$BIN" ] || { echo "error: release archive did not contain $BIN" >&2; exit 1; }
 chmod +x "$tmp/$BIN"
-# downloads can carry macOS quarantine; the binary is unsigned, so clear it
+# downloads can carry macOS quarantine. Signed+notarized releases pass
+# Gatekeeper on their own; clearing it also covers unsigned builds and machines
+# that cannot reach Apple to verify the notarization ticket.
 [ "$os" = Darwin ] && xattr -d com.apple.quarantine "$tmp/$BIN" 2>/dev/null || true
 
 # install without sudo when possible
