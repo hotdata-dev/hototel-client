@@ -776,10 +776,7 @@ pub fn sessions(o: &Opts) -> Result<String, String> {
     // An unknown --provider yields "0 matching sessions", which an agent will
     // report as "nobody uses it" rather than as a typo. Say so instead: this is
     // the exact trap `claude-code` set, since the real id is `claude`.
-    let unknown_provider = o.provider.as_deref().filter(|w| {
-        let w = w.to_lowercase();
-        !crate::core::PROVIDERS.iter().any(|p| p.contains(&w))
-    });
+    let unknown_provider = unknown_provider(o);
     let mut out = format!(
         "{}\n{} matching sessions\n\n{}",
         header(&p, o),
@@ -818,13 +815,7 @@ pub fn sessions(o: &Opts) -> Result<String, String> {
             rows.len()
         ));
     }
-    if let Some(w) = unknown_provider {
-        out.push_str(&format!(
-            "\n\n  note: '{w}' is not a known tool, so this matched nothing on \
-             that filter. Valid ids are {}.",
-            crate::core::PROVIDERS.join(", ")
-        ));
-    }
+    out.push_str(&unknown_provider_note(unknown_provider));
     Ok(out)
 }
 
@@ -964,6 +955,65 @@ fn month_label(iso: &str, first: bool) -> String {
         .unwrap_or_default()
 }
 
+/// Bar pitch for `n` days. Bars narrow as the window grows so a 90-day chart
+/// still fits a terminal; wrapping would scramble the columns into noise.
+/// The `--provider` value, when it names no tool the parsers emit. Shared by
+/// every command that filters, so none of them can silently answer "nothing".
+fn unknown_provider(o: &Opts) -> Option<&str> {
+    o.provider.as_deref().filter(|w| {
+        let w = w.to_lowercase();
+        !crate::core::PROVIDERS.iter().any(|p| p.contains(&w))
+    })
+}
+
+fn unknown_provider_note(w: Option<&str>) -> String {
+    match w {
+        Some(w) => format!(
+            "\n\n  note: '{w}' is not a known tool, so this matched nothing on \
+             that filter. Valid ids are {}.",
+            crate::core::PROVIDERS.join(", ")
+        ),
+        None => String::new(),
+    }
+}
+
+fn slot_for(n: usize) -> usize {
+    (96 / n.max(1)).clamp(2, 5)
+}
+
+/// One x-axis row, every cell exactly `slot` wide.
+///
+/// The width matters more than it looks: a label wider than its cell pushes
+/// every later column right, so at 90 days (slot 2, two-digit days) the numbers
+/// drift off their own bars and date a spike wrongly. When a label cannot fit
+/// beside the bar, only every k-th column is labelled rather than letting them
+/// collide.
+fn axis_row(labels: &[String], slot: usize, bw: usize) -> String {
+    let widest = labels.iter().map(|s| s.chars().count()).max().unwrap_or(0);
+    if widest <= bw {
+        // the common case: every column labelled, the label sitting over its bar
+        return labels
+            .iter()
+            .map(|l| format!("{:>bw$}{}", l, " ".repeat(slot - bw)))
+            .collect::<String>()
+            .trim_end()
+            .to_string();
+    }
+    // Too wide to sit beside its bar, so label every k-th column and let each
+    // label use the whole stride. Never truncate: a clipped date is a wrong
+    // date, which is worse than an unlabelled column.
+    let step = (widest + 1).div_ceil(slot).max(1);
+    let stride = step * slot;
+    let mut out = String::new();
+    let mut i = 0;
+    while i < labels.len() {
+        let width = stride.min((labels.len() - i) * slot).max(widest);
+        out.push_str(&format!("{:<width$}", labels[i]));
+        i += step;
+    }
+    out.trim_end().to_string()
+}
+
 pub fn chart(o: &Opts) -> Result<String, String> {
     let p = fetch(o)?;
     // the filters `sessions` offers, applied through the session id -> day join
@@ -999,13 +1049,14 @@ pub fn chart(o: &Opts) -> Result<String, String> {
     let top = totals.iter().cloned().fold(0.0_f64, f64::max);
     if days.is_empty() || top <= 0.0 {
         out.push_str("\n\n  no usage in this window");
+        out.push_str(&unknown_provider_note(unknown_provider(o)));
         return Ok(out);
     }
 
     // Bars shrink so a 30-day window still fits a terminal rather than wrapping,
     // which would scramble the columns into noise.
     let n = days.len();
-    let slot = (96 / n.max(1)).clamp(2, 5);
+    let slot = slot_for(n);
     let bw = (slot - 1).max(1);
     let h = o.height;
 
@@ -1043,22 +1094,27 @@ pub fn chart(o: &Opts) -> Result<String, String> {
     }
     out.push_str(&format!("\n  {:>lw$} +{}", "", "-".repeat(n * slot)));
 
-    let cell = |s: String| format!("{:>bw$}{}", s, " ".repeat(slot - bw));
-    let nums: String = days.iter().map(|(d, _)| cell(short_day(d))).collect();
-    let marks: String = days
-        .iter()
-        .map(|(d, _)| cell(if weekday_is_weekend(d) { "·".repeat(bw) } else { String::new() }))
-        .collect();
+    let nums = axis_row(
+        &days.iter().map(|(d, _)| short_day(d)).collect::<Vec<_>>(),
+        slot,
+        bw,
+    );
+    let marks = axis_row(
+        &days
+            .iter()
+            .map(|(d, _)| if weekday_is_weekend(d) { "·".repeat(bw) } else { String::new() })
+            .collect::<Vec<_>>(),
+        slot,
+        bw,
+    );
     let months: String = days
         .iter()
         .enumerate()
         .map(|(i, (d, _))| format!("{:<slot$}", month_label(d, i == 0)))
         .collect();
-    out.push_str(&format!("\n  {:>lw$}  {}", "", nums.trim_end()));
-    if marks.trim().is_empty() {
-        // no weekend in the window; the marker row would be a blank line
-    } else {
-        out.push_str(&format!("\n  {:>lw$}  {}", "", marks.trim_end()));
+    out.push_str(&format!("\n  {:>lw$}  {}", "", nums));
+    if !marks.trim().is_empty() {
+        out.push_str(&format!("\n  {:>lw$}  {}", "", marks));
     }
     out.push_str(&format!("\n  {:>lw$}  {}", "", months.trim_end()));
 
@@ -1081,6 +1137,7 @@ pub fn chart(o: &Opts) -> Result<String, String> {
         unit(top),
         peak
     ));
+    out.push_str(&unknown_provider_note(unknown_provider(o)));
     Ok(out)
 }
 
@@ -1374,6 +1431,63 @@ mod tests {
         let days = series_by_day(&p, &Opts::default(), Some(&keep));
         assert_eq!(days.len(), 1, "only bob's day survives");
         assert_eq!(days[0].0, "2026-09-13");
+    }
+
+    /// Build the x-axis exactly as chart() does, for a given number of days.
+    fn axis_for(n: usize) -> (String, usize, usize) {
+        let slot = slot_for(n);
+        let bw = (slot - 1).max(1);
+        // day-of-month is what chart() actually passes: 1..=31, never wider
+        let labels: Vec<String> = (0..n).map(|d| (d % 31 + 1).to_string()).collect();
+        (axis_row(&labels, slot, bw), slot, bw)
+    }
+
+    #[test]
+    fn every_day_label_sits_under_its_own_bar() {
+        // The helpers all passed while the rendered row drifted: a two-digit
+        // label in a one-char cell pushed every later column right, so at 90
+        // days the numbers dated the wrong bars. Assert the geometry itself.
+        for n in [7, 14, 30, 60, 90, 120] {
+            let (row, slot, _) = axis_for(n);
+            let cells: Vec<String> = row.chars().collect::<Vec<_>>()
+                .chunks(slot)
+                .map(|c| c.iter().collect::<String>().trim().to_string())
+                .collect();
+            for (i, cell) in cells.iter().enumerate() {
+                if cell.is_empty() {
+                    continue; // a column skipped because labels cannot fit
+                }
+                assert_eq!(
+                    cell,
+                    &(i % 31 + 1).to_string(),
+                    "at {n} days, column {i} is labelled {cell:?}"
+                );
+            }
+            assert!(!cells.is_empty(), "{n} days produced no labels");
+        }
+    }
+
+    #[test]
+    fn a_narrow_chart_labels_fewer_columns_rather_than_colliding() {
+        let (row, slot, _) = axis_for(90);
+        assert_eq!(slot, 2, "90 days must use the narrowest pitch");
+        // two-digit days cannot sit beside a 1-char bar, so only every other
+        // column is labelled -- never two numbers run together
+        assert!(!row.contains("1112"), "labels collided: {row}");
+        let labelled = row.chars().collect::<Vec<_>>().chunks(slot)
+            .filter(|c| !c.iter().collect::<String>().trim().is_empty()).count();
+        assert!(labelled > 5 && labelled < 90, "labelled {labelled} of 90");
+    }
+
+    #[test]
+    fn an_unknown_provider_is_reported_by_chart_too() {
+        let o = Opts { provider: Some("claude-code".into()), ..Default::default() };
+        assert_eq!(unknown_provider(&o), Some("claude-code"));
+        let note = unknown_provider_note(unknown_provider(&o));
+        assert!(note.contains("not a known tool") && note.contains("claude"));
+        let ok = Opts { provider: Some("codex".into()), ..Default::default() };
+        assert!(unknown_provider(&ok).is_none());
+        assert!(unknown_provider_note(None).is_empty());
     }
 
     #[test]
