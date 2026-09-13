@@ -1,14 +1,20 @@
 #!/bin/sh
-# hotusage collector installer for macOS and Linux.
+# hotusage installer for macOS and Linux.
 #
-#   curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-collector/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/install.sh | sh
 #
-# Downloads the latest release binary for this machine, puts it on PATH, and
-# registers it as a background agent (macOS LaunchAgent / systemd user unit).
+# Downloads the latest release binary for this machine, puts it on PATH,
+# registers it as a background agent (macOS LaunchAgent / systemd user unit),
+# and installs the agent skill so Claude Code and Codex can answer questions
+# about your organization's usage.
 set -eu
 
-REPO=hotdata-dev/hotusage-collector
-BIN=hotusage-collector
+REPO=hotdata-dev/hotusage-client
+BIN=hotusage
+# What this was called before 0.4.0. `$BIN install` retires the old service
+# registration itself; the stale binary is this script's job, because a copy
+# left on PATH would shadow or confuse the new one.
+LEGACY_BIN=hotusage-collector
 
 os=$(uname -s)
 arch=$(uname -m)
@@ -98,7 +104,21 @@ esac
 # Non-fatal: `install` needs a desktop/systemd user session, which a plain SSH
 # shell does not have -- the binary is still usable, so keep going and print
 # the next steps rather than aborting under `set -e`.
-"$dest/$BIN" install || echo "note: agent registration failed (no desktop/systemd session?) - run '$dest/$BIN install' from a login session" >&2
+if "$dest/$BIN" install; then
+  # Only now is the old registration gone (`$BIN install` retires it), so the
+  # old executable is finally safe to remove. Doing it earlier would leave the
+  # old LaunchAgent/systemd unit pointing at a file that no longer exists, and
+  # KeepAlive/Restart=always would respawn-fail in a loop until someone
+  # re-ran install by hand.
+  for old in /usr/local/bin "$HOME/.local/bin"; do
+    if [ -f "$old/$LEGACY_BIN" ] && [ -w "$old" ]; then
+      rm -f "$old/$LEGACY_BIN" && echo "removed the old $old/$LEGACY_BIN"
+    fi
+  done
+else
+  echo "note: agent registration failed (no desktop/systemd session?) - run '$dest/$BIN install' from a login session" >&2
+  echo "note: the previous $LEGACY_BIN install was left in place until that succeeds" >&2
+fi
 
 # Sign in straight away: opens the browser, waits for approval, then syncs.
 # A no-op when this machine is already signed in (upgrades, re-runs). Failure
@@ -116,6 +136,25 @@ elif "$dest/$BIN" signin; then
 
 done - usage syncs every 15 minutes from now on.
 TXT
+  # The skill only works if this machine was actually granted read access; a
+  # server older than 0.4.0 grants reporting alone, and promising otherwise
+  # sends people to an agent that answers every question with an error.
+  if "$dest/$BIN" whoami | grep -q "reads this organization"; then
+    cat <<TXT
+
+your coding agent can now answer questions about your team's usage; start a
+new Claude Code or Codex session and ask something like "what did we spend on
+Claude Code last month?". Or ask here:
+  $dest/$BIN summary
+TXT
+  else
+    cat <<TXT
+
+note: this machine can report usage but not read it, so the agent skill cannot
+answer questions yet. The hotusage server needs updating; after that, run:
+  $dest/$BIN signin --force
+TXT
+  fi
 else
   cat <<TXT
 

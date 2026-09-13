@@ -26,13 +26,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build
         run: cargo build --release
+      - name: Tests
+        run: cargo test --release
       - name: Smoke test (parse + dump on an empty machine)
         if: runner.os != 'Windows'
-        run: ./target/release/hotusage-collector --dump | head -c 200; echo
+        run: ./target/release/hotusage dump | head -c 200; echo
+      # the skill file is embedded at compile time, so a broken template is a
+      # build-time problem worth catching here rather than on someone's laptop
+      - name: Smoke test (skill renders)
+        if: runner.os != 'Windows'
+        run: |
+          ./target/release/hotusage skill install
+          test -f "$HOME/.claude/skills/hotusage/SKILL.md"
+          grep -q "name: hotusage" "$HOME/.claude/skills/hotusage/SKILL.md"
+          ! grep -q "{{" "$HOME/.claude/skills/hotusage/SKILL.md"
       - uses: actions/upload-artifact@v4
         with:
-          name: hotusage-collector-${{ matrix.target }}
+          name: hotusage-${{ matrix.target }}
           path: |
-            target/release/hotusage-collector
-            target/release/hotusage-collector.exe
+            target/release/hotusage
+            target/release/hotusage.exe
           if-no-files-found: error

@@ -1,0 +1,6 @@
+# The skill file is embedded into the binary with include_str! and written to
+# the agent's skills directory verbatim. A CRLF checkout on Windows would ship
+# CRLF frontmatter to an agent that expects "---\n", so pin it to LF wherever
+# it is checked out. (render() also normalizes, in case a build happens outside
+# a git checkout with these attributes.)
+skill/SKILL.md text eol=lf

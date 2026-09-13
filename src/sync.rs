@@ -47,6 +47,12 @@ pub struct Config {
     pub token: String,
     pub user_email: String,
     pub interval_minutes: u64,
+    /// What the stored token may do, as the server granted it. Empty means a
+    /// token minted before scopes existed, which is ingest-only -- so an
+    /// existing install keeps syncing and is simply told to sign in again
+    /// before it can answer questions.
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 impl Default for Config {
@@ -56,7 +62,21 @@ impl Default for Config {
             token: String::new(),
             user_email: String::new(),
             interval_minutes: 15,
+            scopes: Vec::new(),
         }
+    }
+}
+
+/// Scopes this client asks for: report this machine's usage, and read the org
+/// back so the installed skill can answer questions. One approval, both jobs.
+pub const WANTED_SCOPES: &str = "ingest,read";
+
+impl Config {
+    pub fn has_scope(&self, scope: &str) -> bool {
+        if self.scopes.is_empty() {
+            return scope == "ingest"; // pre-scopes tokens are ingest-only
+        }
+        self.scopes.iter().any(|s| s == scope)
     }
 }
 
@@ -229,6 +249,10 @@ pub struct SignIn {
     pub verification_url: String,
     pub interval: u64,
     pub expires_in: u64,
+    /// What the server said it will grant. A server predating scopes echoes
+    /// nothing, which means ingest-only -- reported, not refused, because
+    /// reporting usage is still the client's main job.
+    pub granted: Vec<String>,
 }
 
 /// Ask the server to start a sign-in. The caller opens `verification_url` and
@@ -238,7 +262,10 @@ pub fn signin_start(server_url: &str) -> Result<SignIn, String> {
     let url = format!("{}/api/device/start", server_url.trim_end_matches('/'));
     let mut resp = agent(30)
         .post(&url)
-        .send_json(serde_json::json!({ "hostname": hostname() }))
+        .send_json(serde_json::json!({
+            "hostname": hostname(),
+            "scope": WANTED_SCOPES,
+        }))
         .map_err(|e| format!("could not reach {server_url}: {e}"))?;
     let v: serde_json::Value = resp
         .body_mut()
@@ -249,10 +276,16 @@ pub fn signin_start(server_url: &str) -> Result<SignIn, String> {
     if device_code.is_empty() {
         return Err("server did not start a sign-in".into());
     }
+    let granted: Vec<String> = get("scope")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     Ok(SignIn {
         device_code,
         user_code: get("user_code"),
         verification_url: validated_url(&get("verification_url"))?,
+        granted,
         // clamped: an absurd expiry would pin the poll thread (and the
         // "signing in" flag that blocks another attempt) open for days
         interval: v.get("interval").and_then(|x| x.as_u64()).unwrap_or(3).clamp(1, 60),
@@ -294,6 +327,10 @@ pub fn signin_wait(server_url: &str, s: &SignIn) -> Result<String, String> {
                 cfg.server_url = server_url.trim_end_matches('/').to_string();
                 cfg.user_email = email.to_string();
                 cfg.token = token.to_string();
+                // what the server said it granted at /api/device/start; an
+                // older server says nothing, and has_scope reads that as
+                // ingest-only rather than assuming what was asked for
+                cfg.scopes = s.granted.clone();
                 save_config(&cfg).map_err(|e| format!("could not save config: {e}"))?;
                 return Ok(email.to_string());
             }
@@ -308,6 +345,70 @@ pub fn signin_wait(server_url: &str, s: &SignIn) -> Result<String, String> {
 /// Out rather than Sign In).
 pub fn is_signed_in() -> bool {
     !load_config().token.trim().is_empty()
+}
+
+/// An authenticated GET against the server's read-only API, for the `usage`
+/// subcommands. Kept here beside `sync` so the token, the secure-transport
+/// rule and the no-redirect agent have exactly one home.
+pub fn api_get(cfg: &Config, path: &str, timeout: u64) -> Result<serde_json::Value, String> {
+    if cfg.token.trim().is_empty() {
+        return Err("not signed in - run `hotusage signin`".into());
+    }
+    if !cfg.has_scope("read") {
+        // the token works, it just was not granted this; say what to do rather
+        // than letting the server answer with a bare 401
+        return Err("this machine is signed in to report usage but not to read it - \
+                    run `hotusage signin --force` to grant read access"
+            .into());
+    }
+    require_secure(&cfg.server_url)?;
+    let url = format!("{}{}", cfg.server_url.trim_end_matches('/'), path);
+    let resp = agent(timeout)
+        .get(&url)
+        .header("Authorization", &format!("Bearer {}", cfg.token))
+        .call();
+    match resp {
+        Ok(mut r) => r
+            .body_mut()
+            .read_json()
+            .map_err(|e| format!("unreadable response from the server: {e}")),
+        Err(ureq::Error::StatusCode(401)) => Err("this machine's access was revoked - \
+                                                  run `hotusage signin` again"
+            .into()),
+        Err(ureq::Error::StatusCode(403)) => {
+            Err("this machine is not allowed to read that".into())
+        }
+        Err(ureq::Error::StatusCode(404)) => Err("not found".into()),
+        Err(ureq::Error::StatusCode(409)) => {
+            Err("this account does not belong to an organization yet".into())
+        }
+        Err(ureq::Error::RedirectFailed) => Err(format!(
+            "{} redirected the request - point server_url at the API host itself",
+            cfg.server_url
+        )),
+        Err(ureq::Error::StatusCode(code)) => Err(format!("server error {code}")),
+        Err(e) => Err(format!("could not reach {}: {e}", cfg.server_url)),
+    }
+}
+
+/// Revoke one specific token server-side, leaving local state alone.
+///
+/// Split out so a re-authorization can retire the credential it replaces:
+/// `signin --force` overwrites the stored token, and without this the old one
+/// stays live forever with nobody holding it -- only an org admin could revoke
+/// it, and the admin page would show two rows for one machine.
+pub fn revoke_token(server_url: &str, token: &str) -> Result<(), String> {
+    if token.trim().is_empty() {
+        return Ok(());
+    }
+    require_secure(server_url)?;
+    let url = format!("{}/api/collector/signout", server_url.trim_end_matches('/'));
+    agent(30)
+        .post(&url)
+        .header("Authorization", &format!("Bearer {token}"))
+        .send_empty()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Revoke this collector's token server-side, then forget it locally. The
@@ -326,6 +427,9 @@ pub fn signout() -> Result<String, String> {
         .send_empty();
     let mut next = cfg.clone();
     next.token = String::new();
+    // the scopes described the token just discarded; leaving them would make
+    // has_scope() answer for a credential that no longer exists
+    next.scopes = Vec::new();
     save_config(&next).map_err(|e| format!("could not clear the local token: {e}"))?;
     match remote {
         Ok(_) => Ok("Signed out".into()),
@@ -347,7 +451,7 @@ pub fn sync(config: &Config) -> Result<String, String> {
     // exempt - the server's dev mode accepts tokenless ingest locally).
     if config.token.trim().is_empty() && !is_loopback(&config.server_url) {
         return Err("not signed in: use Sign In... in the menu (or run \
-                    `hotusage-collector signin`)"
+                    `hotusage signin`)"
             .to_string());
     }
     require_secure(&config.server_url)?;

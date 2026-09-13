@@ -73,7 +73,7 @@ pub fn run() -> ! {
     }));
 
     // identity poll: cheap config read, so a sign-in performed by
-    // `hotusage-collector signin` shows up in the menu within seconds
+    // `hotusage signin` shows up in the menu within seconds
     let id_proxy = event_loop.create_proxy();
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(10));
