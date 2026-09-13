@@ -40,6 +40,19 @@ browser to sign in. Approve the machine and the first sync runs immediately —
 there is nothing to edit by hand. Re-running the installer to upgrade leaves an
 existing sign-in alone.
 
+To install a specific release rather than the latest, set `HOTUSAGE_VERSION`.
+In a piped install it goes on `sh` — the script reads it, and `curl` never sees
+your environment:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/install.sh | HOTUSAGE_VERSION=0.5.2 sh
+```
+
+A pinned install additionally verifies that the binary it wrote reports that
+version, which an unpinned one cannot: `latest` is the same answer that chose
+the download, so it cannot detect its own staleness. `hotusage version` prints
+the build and its path at any time.
+
 Upgrading from `hotusage-collector` (0.3.x): the installer removes the old
 binary and `hotusage install` retires its LaunchAgent / systemd unit / Run key,
 so you do not end up with two daemons. Your existing token keeps working for

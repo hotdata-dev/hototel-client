@@ -3,6 +3,14 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/install.sh | sh
 #
+# To pin a known release instead of whatever "latest" resolves to, set
+# HOTUSAGE_VERSION. In a piped install it goes on `sh`, not on `curl` -- this
+# script is what reads it, and curl never sees the environment:
+#
+#   curl -fsSL .../install.sh | HOTUSAGE_VERSION=0.5.2 sh
+#
+# A pinned install also verifies that the binary it wrote reports that version.
+#
 # Downloads the latest release binary for this machine, puts it on PATH,
 # registers it as a background agent (macOS LaunchAgent / systemd user unit),
 # and installs the agent skill so Claude Code and Codex can answer questions
