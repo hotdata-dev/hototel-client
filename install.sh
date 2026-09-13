@@ -35,11 +35,22 @@ esac
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-echo "downloading the latest $BIN release ($os $arch)..."
-# resolve the latest tag, then fetch the matching asset by name
-tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
-  sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
-[ -n "$tag" ] || { echo "error: could not resolve the latest release tag" >&2; exit 1; }
+# HOTUSAGE_VERSION pins the install to a known tag. Worth having on its own
+# (reproducible installs, rollback), and it is the only way the post-install
+# check below can prove anything about WHICH release landed: asking the
+# releases/latest API and then validating against that same answer cannot
+# detect a stale answer.
+pinned=${HOTUSAGE_VERSION:-}
+if [ -n "$pinned" ]; then
+  case "$pinned" in v*) tag=$pinned ;; *) tag="v$pinned" ;; esac
+  echo "downloading $BIN $tag ($os $arch)..."
+else
+  echo "downloading the latest $BIN release ($os $arch)..."
+  # resolve the latest tag, then fetch the matching asset by name
+  tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
+    sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+  [ -n "$tag" ] || { echo "error: could not resolve the latest release tag" >&2; exit 1; }
+fi
 asset="$BIN-${tag#v}-$suffix"
 curl -fsSL -o "$tmp/$asset" \
   "https://github.com/$REPO/releases/download/$tag/$asset" || {
@@ -96,19 +107,31 @@ rm -f "$dest/$BIN"
 mv "$tmp/$BIN" "$dest/$BIN"
 echo "installed $dest/$BIN"
 
-# Prove the binary on disk is the one just downloaded. A release that is still
-# building when this runs makes the GitHub "latest" API serve the PREVIOUS tag,
-# and the install then silently succeeds with an older build -- which looks
-# exactly like the new one until some fixed behaviour is missing. Fail loudly
-# instead of leaving someone to compare checksums.
+# Check the installed binary against the tag that was asked for.
+#
+# What this proves depends on where $tag came from. Pinned with
+# HOTUSAGE_VERSION it proves the requested release is the one now on disk --
+# the check that would have caught a release still building while the
+# releases/latest API served the previous tag. Resolved from that API it can
+# only prove the archive holds the binary its own name claims, since a stale
+# answer would make both sides agree; that still catches a mis-built release,
+# which is worth having, but it is not a staleness check.
 want="${tag#v}"
 got=$("$dest/$BIN" version 2>/dev/null | awk '{print $2}')
 if [ -z "$got" ]; then
+  # never say "verified" here: a skipped check that announces success is the
+  # false confidence this whole block exists to remove
   echo "note: $BIN has no 'version' command; skipping the install check (pre-0.5.2 build?)" >&2
 elif [ "$got" != "$want" ]; then
-  echo "error: installed $BIN reports $got but $tag was downloaded" >&2
-  echo "  the release may still be building; re-run this installer in a minute" >&2
+  echo "error: installed $BIN reports $got but $tag was requested" >&2
+  if [ -n "$pinned" ]; then
+    echo "  $tag may still be building, or its assets are mis-built" >&2
+  else
+    echo "  the $tag archive does not contain the build its name claims" >&2
+  fi
   exit 1
+elif [ -n "$pinned" ]; then
+  echo "verified $BIN $got"
 fi
 case ":$PATH:" in
   *":$dest:"*) ;;
