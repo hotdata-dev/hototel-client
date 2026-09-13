@@ -158,6 +158,22 @@ mod tests {
     }
 
     #[test]
+    fn the_skill_documents_the_provider_ids_the_parsers_actually_emit() {
+        // Found against real data: the file said `claude-code`, nothing emits
+        // that, and --provider is a substring match -- so the agent would have
+        // reported "nobody uses Claude Code" rather than erroring. Pin the
+        // documentation to the constants the parsers use.
+        let out = rendered();
+        for p in crate::core::PROVIDERS {
+            assert!(out.contains(&format!("`{p}`")), "SKILL.md never names `{p}`");
+        }
+        assert!(
+            !out.contains("`claude-code`"),
+            "SKILL.md documents a provider id nothing emits"
+        );
+    }
+
+    #[test]
     fn rendering_leaves_no_placeholder_behind() {
         let out = rendered();
         assert!(!out.contains("{{BIN}}"), "a placeholder survived");

@@ -40,10 +40,10 @@ Every reporting command takes `--days 7|30|90` (default 30) or `--days all`, and
 | `{{BIN}} summary` | Totals, top people, top projects, by-tool split, recent trend. **Start here.** |
 | `{{BIN}} users` | Per-person: sessions, requests, tokens, cost, last active. `--limit N` |
 | `{{BIN}} projects` | Per-project: sessions, distinct people, tokens, cost. `--limit N` |
-| `{{BIN}} providers` | Per-tool: Claude Code vs Codex vs OpenCode. |
+| `{{BIN}} providers` | Per-tool: `claude` (Claude Code) vs `codex` vs `opencode`. |
 | `{{BIN}} models` | Which models sessions touched, and how many people used each. |
 | `{{BIN}} daily` | Day-by-day tokens and cost — the series to read trends from. |
-| `{{BIN}} sessions` | Individual sessions. `--user` `--project` `--provider` (substring match), `--limit N` |
+| `{{BIN}} sessions` | Individual sessions. `--user` `--project` `--provider` (substring match; provider is `claude`/`codex`/`opencode`), `--limit N` |
 | `{{BIN}} session <id>` | One session request-by-request: context growth and output per turn. |
 | `{{BIN}} raw` | The entire payload as JSON. |
 
@@ -89,7 +89,10 @@ apart from here.
 
 ## Interpreting the data
 
-- `tool` / `provider` is `claude-code`, `codex`, or `opencode`.
+- `tool` / `provider` is exactly `claude` (Claude Code), `codex`, or
+  `opencode`. It is **not** spelled claude-code; `--provider` is a substring
+  match, so that spelling matches nothing and would read as "nobody uses
+  Claude Code" rather than failing loudly.
 - `project` is the repository or directory the session ran in.
 - `requests` is turns in the session, not API calls.
 - `context tokens` is how full the context window got — useful for spotting

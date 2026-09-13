@@ -149,7 +149,7 @@ fn parse_claude_file(path: &Path) -> Option<RawSession> {
         .map(|(c, _)| c)
         .or(Some(dirname));
     Some(RawSession {
-        provider: "claude",
+        provider: crate::core::CLAUDE,
         id: session_id,
         cwd,
         title,
@@ -254,7 +254,7 @@ fn parse_codex_file(path: &Path, titles: &HashMap<String, String>) -> Option<Raw
             .map(|l| truncate_chars(l, 80))
     });
     Some(RawSession {
-        provider: "codex",
+        provider: crate::core::CODEX,
         id,
         cwd,
         title,
@@ -353,7 +353,7 @@ fn parse_opencode() -> Vec<RawSession> {
         }
         if !msgs.is_empty() {
             out.push(RawSession {
-                provider: "opencode",
+                provider: crate::core::OPENCODE,
                 id: sid,
                 cwd: directory,
                 title,
