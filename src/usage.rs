@@ -981,37 +981,40 @@ fn slot_for(n: usize) -> usize {
     (96 / n.max(1)).clamp(2, 5)
 }
 
-/// One x-axis row, every cell exactly `slot` wide.
+/// Lay labels onto one x-axis row of fixed width.
 ///
-/// The width matters more than it looks: a label wider than its cell pushes
-/// every later column right, so at 90 days (slot 2, two-digit days) the numbers
-/// drift off their own bars and date a spike wrongly. When a label cannot fit
-/// beside the bar, only every k-th column is labelled rather than letting them
-/// collide.
+/// Every label is written at an ABSOLUTE offset (`i * slot`), never appended,
+/// so a label wider than its cell cannot push later columns right. That drift
+/// is what made a 90-day chart date its spikes wrongly: at that width the bar
+/// pitch is 2 columns while "15" needs 2 and "Sep" needs 3.
+///
+/// A label that would touch the previous one is skipped rather than truncated
+/// or overlapped -- a clipped date is a wrong date, and an unlabelled column is
+/// merely less informative. This is why the day row thins out on wide windows
+/// without any explicit step.
 fn axis_row(labels: &[String], slot: usize, bw: usize) -> String {
-    let widest = labels.iter().map(|s| s.chars().count()).max().unwrap_or(0);
-    if widest <= bw {
-        // the common case: every column labelled, the label sitting over its bar
-        return labels
-            .iter()
-            .map(|l| format!("{:>bw$}{}", l, " ".repeat(slot - bw)))
-            .collect::<String>()
-            .trim_end()
-            .to_string();
+    let width = labels.len() * slot;
+    let mut row = vec![' '; width];
+    let mut prev_end = 0usize; // exclusive, plus the one space we insist on
+    for (i, label) in labels.iter().enumerate() {
+        if label.is_empty() {
+            continue;
+        }
+        let chars: Vec<char> = label.chars().collect();
+        let col = i * slot;
+        // sit over the bar when it fits, otherwise start at the column
+        let start = if chars.len() <= bw {
+            col + (bw - chars.len())
+        } else {
+            col
+        };
+        if start < prev_end || start + chars.len() > width {
+            continue;
+        }
+        row[start..start + chars.len()].copy_from_slice(&chars);
+        prev_end = start + chars.len() + 1; // keep at least one space between
     }
-    // Too wide to sit beside its bar, so label every k-th column and let each
-    // label use the whole stride. Never truncate: a clipped date is a wrong
-    // date, which is worse than an unlabelled column.
-    let step = (widest + 1).div_ceil(slot).max(1);
-    let stride = step * slot;
-    let mut out = String::new();
-    let mut i = 0;
-    while i < labels.len() {
-        let width = stride.min((labels.len() - i) * slot).max(widest);
-        out.push_str(&format!("{:<width$}", labels[i]));
-        i += step;
-    }
-    out.trim_end().to_string()
+    row.into_iter().collect::<String>().trim_end().to_string()
 }
 
 pub fn chart(o: &Opts) -> Result<String, String> {
@@ -1107,16 +1110,20 @@ pub fn chart(o: &Opts) -> Result<String, String> {
         slot,
         bw,
     );
-    let months: String = days
-        .iter()
-        .enumerate()
-        .map(|(i, (d, _))| format!("{:<slot$}", month_label(d, i == 0)))
-        .collect();
+    let months = axis_row(
+        &days
+            .iter()
+            .enumerate()
+            .map(|(i, (d, _))| month_label(d, i == 0))
+            .collect::<Vec<_>>(),
+        slot,
+        bw,
+    );
     out.push_str(&format!("\n  {:>lw$}  {}", "", nums));
     if !marks.trim().is_empty() {
         out.push_str(&format!("\n  {:>lw$}  {}", "", marks));
     }
-    out.push_str(&format!("\n  {:>lw$}  {}", "", months.trim_end()));
+    out.push_str(&format!("\n  {:>lw$}  {}", "", months));
 
     let legend: Vec<String> = STACK.iter().map(|(name, b)| format!("{b} {name}")).collect();
     out.push_str(&format!(
@@ -1465,6 +1472,34 @@ mod tests {
             }
             assert!(!cells.is_empty(), "{n} days produced no labels");
         }
+    }
+
+    #[test]
+    fn the_month_name_sits_on_its_own_column_too() {
+        // the day and weekend rows were fixed first and the month row was not:
+        // "Sep" is 3 characters in a 2-column pitch, which drifted every later
+        // label right of the day it marks
+        for n in [30, 60, 90] {
+            let slot = slot_for(n);
+            let bw = (slot - 1).max(1);
+            // one month boundary partway through, as a real window has
+            let labels: Vec<String> = (0..n)
+                .map(|i| if i == 0 { "Aug".into() } else if i == 17 { "Sep".into() } else { String::new() })
+                .collect();
+            let row = axis_row(&labels, slot, bw);
+            assert!(row.starts_with("Aug"), "at {n} days: {row:?}");
+            let at = row.find("Sep").unwrap_or_else(|| panic!("no Sep at {n} days: {row:?}"));
+            assert_eq!(at, 17 * slot, "at {n} days Sep sits at {at}, not {}", 17 * slot);
+        }
+    }
+
+    #[test]
+    fn a_label_never_overlaps_its_neighbour() {
+        // a wide label is dropped, not written over the previous one
+        let labels: Vec<String> = (0..6).map(|_| "Sept".to_string()).collect();
+        let row = axis_row(&labels, 2, 1);
+        assert_eq!(row.matches("Sept").count(), 2, "{row:?}");
+        assert!(!row.contains("SeptSept"), "labels ran together: {row:?}");
     }
 
     #[test]
