@@ -117,11 +117,13 @@ fn run_signin(force: bool) -> ! {
         std::process::exit(0);
     }
     if sync::is_signed_in() {
-        println!(
-            "hotusage: re-authorizing {} (this machine's access does not yet \
-             cover reading your organization's usage)",
-            cfg.user_email
-        );
+        let why = if cfg.has_scope("read") {
+            "--force"
+        } else {
+            "this machine's access does not yet cover reading your \
+             organization's usage"
+        };
+        println!("hotusage: re-authorizing {} ({why})", cfg.user_email);
     }
     // captured before signin_wait overwrites it, so the credential being
     // replaced can be revoked rather than left live and unheld

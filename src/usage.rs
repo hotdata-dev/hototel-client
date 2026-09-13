@@ -87,7 +87,7 @@ pub struct Daily {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Viewer {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub org: String,
 }
 
@@ -821,6 +821,15 @@ pub fn session(o: &Opts) -> Result<String, String> {
             .collect::<Vec<_>>(),
     ));
     out.push_str(&format!("\n\n  peak context {} tokens", num(peak)));
+    if detail.len() > o.limit {
+        // never truncate silently: a capped list read as the whole session
+        // would make "when did the context blow up" answerable and wrong
+        out.push_str(&format!(
+            "\n  showing the first {} of {} requests; raise it with --limit",
+            o.limit,
+            detail.len()
+        ));
+    }
     Ok(out)
 }
 

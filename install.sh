@@ -95,15 +95,6 @@ fi
 rm -f "$dest/$BIN"
 mv "$tmp/$BIN" "$dest/$BIN"
 echo "installed $dest/$BIN"
-
-# Retire the pre-0.4.0 binary wherever it landed. Its service registration is
-# removed by `$BIN install` below; this is the executable itself, which would
-# otherwise sit on PATH under the old name doing nothing.
-for old in /usr/local/bin "$HOME/.local/bin"; do
-  if [ -f "$old/$LEGACY_BIN" ] && [ -w "$old" ]; then
-    rm -f "$old/$LEGACY_BIN" && echo "removed the old $old/$LEGACY_BIN"
-  fi
-done
 case ":$PATH:" in
   *":$dest:"*) ;;
   *) echo "note: $dest is not on your PATH - add it to your shell profile" ;;
