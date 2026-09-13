@@ -16,7 +16,7 @@
 //!   hotusage dump             print parsed sessions as JSON (debug)
 //!   hotusage skill install    (re)write the agent skill file
 //!
-//!   hotusage summary | users | projects | providers | models | daily
+//!   hotusage summary | users | projects | providers | models | daily | chart
 //!            | sessions | session <id> | raw        read the org's usage
 //!
 //! Desktop indicator exists on macOS (top menu bar) and Windows (taskbar tray)
@@ -222,6 +222,7 @@ fn run_usage(cmd: &str, rest: &[String]) -> ! {
         "providers" | "tools" => usage::providers(&opts),
         "models" => usage::models(&opts),
         "daily" => usage::daily(&opts),
+        "chart" => usage::chart(&opts),
         "sessions" => usage::sessions(&opts),
         "session" => usage::session(&opts),
         "raw" => usage::raw(&opts),
@@ -326,7 +327,7 @@ fn main() {
         "dump" | "--dump" => run_dump(),
         "daemon" | "--daemon" => run_daemon(),
         "summary" | "users" | "projects" | "providers" | "tools" | "models" | "daily"
-        | "sessions" | "session" | "raw" => run_usage(&arg, &rest),
+        | "chart" | "sessions" | "session" | "raw" => run_usage(&arg, &rest),
         "help" | "--help" | "-h" => print_out(USAGE),
         "" => {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -363,8 +364,10 @@ read your organization's usage (needs read access; `signin` grants it):
   hotusage providers         per-tool breakdown
   hotusage models            which models are being used
   hotusage daily             day-by-day tokens and cost
+  hotusage chart             the same series as a stacked bar chart
   hotusage sessions          individual sessions (--user/--project/--provider)
   hotusage session <id>      one session, request by request
   hotusage raw               the whole payload as JSON
 
-  options: --days 7|30|90|all   --limit N   --fresh";
+  options: --days 7|30|90|all   --limit N   --fresh
+  chart also: --metric cost|tokens   --height N   --user/--project/--provider";

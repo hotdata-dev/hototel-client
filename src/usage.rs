@@ -237,8 +237,34 @@ fn num(n: i64) -> String {
     format!("{n}")
 }
 
+/// Money the way the dashboard writes it (app.js fmtMoney): cents below a
+/// thousand, grouped whole dollars above it, and a floor marker rather than
+/// "$0.00" for a real-but-tiny amount.
 fn money(n: f64) -> String {
+    if n > 0.0 && n < 0.005 {
+        return "<$0.01".to_string();
+    }
+    if n >= 1000.0 {
+        return format!("${}", group(n.round() as i64));
+    }
     format!("${n:.2}")
+}
+
+/// 27086 -> "27,086"
+fn group(n: i64) -> String {
+    let (sign, digits) = if n < 0 {
+        ("-", (-n).to_string())
+    } else {
+        ("", n.to_string())
+    };
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    format!("{sign}{out}")
 }
 
 /// Left-aligned unless the column holds numbers, which read far better right.
@@ -316,6 +342,10 @@ pub struct Opts {
     pub project: Option<String>,
     pub provider: Option<String>,
     pub id: Option<String>,
+    /// `chart` only: plot estimated cost (the default, and what people ask
+    /// about) or raw token counts.
+    pub cost_metric: bool,
+    pub height: usize,
 }
 
 impl Default for Opts {
@@ -329,6 +359,8 @@ impl Default for Opts {
             project: None,
             provider: None,
             id: None,
+            cost_metric: true,
+            height: 18,
         }
     }
 }
@@ -369,6 +401,21 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "--user" => o.user = Some(value(&mut i, "--user")?),
             "--project" => o.project = Some(value(&mut i, "--project")?),
             "--provider" => o.provider = Some(value(&mut i, "--provider")?),
+            "--metric" => {
+                let raw = value(&mut i, "--metric")?;
+                o.cost_metric = match raw.to_lowercase().as_str() {
+                    "cost" | "usd" | "$" => true,
+                    "tokens" | "tok" => false,
+                    _ => return Err(format!("--metric is cost or tokens, not '{raw}'")),
+                };
+            }
+            "--height" => {
+                let raw = value(&mut i, "--height")?;
+                o.height = raw
+                    .parse::<usize>()
+                    .map_err(|_| format!("bad --height value: {raw}"))?
+                    .clamp(4, 60);
+            }
             "--fresh" => o.fresh = true,
             other if other.starts_with('-') => {
                 return Err(format!("unknown option '{other}'"));
@@ -847,6 +894,196 @@ pub fn session(o: &Opts) -> Result<String, String> {
     Ok(out)
 }
 
+// ---------------------------------------------------------------------------
+// chart: the dashboard's stacked daily column chart, in text
+// ---------------------------------------------------------------------------
+
+/// Series in the order the dashboard stacks them, bottom first (app.js SERIES),
+/// with the block each one is drawn with here. Output sits at the bottom and
+/// cache reads on top, so a chart read next to the web UI has the same shape.
+const STACK: [(&str, &str); 4] = [
+    ("Output", "\u{2588}"),      // full block
+    ("Input", "\u{2592}"),       // medium shade
+    ("Cache write", "\u{2593}"), // dark shade
+    ("Cache read", "\u{2591}"),  // light shade
+];
+
+/// Day -> the four series, in STACK order. Cost or tokens.
+fn series_by_day(p: &Payload, o: &Opts, keep: Option<&HashSet<String>>) -> Vec<(String, [f64; 4])> {
+    let mut map: BTreeMap<String, [f64; 4]> = BTreeMap::new();
+    for r in &p.daily {
+        let d = day_of(&r.d);
+        if d.is_empty() {
+            continue;
+        }
+        // a filtered chart keeps only the days' rows belonging to matching
+        // sessions; `daily` rows carry no user, so the session id is the join
+        if keep.is_some_and(|k| !k.contains(&r.s)) {
+            continue;
+        }
+        let e = map.entry(d).or_insert([0.0; 4]);
+        let vals = if o.cost_metric {
+            [r.cout, r.cin, r.ccw, r.ccr]
+        } else {
+            [
+                r.tokens_out as f64,
+                r.tokens_in as f64,
+                r.cw as f64,
+                r.cr as f64,
+            ]
+        };
+        for (slot, v) in e.iter_mut().zip(vals) {
+            *slot += v;
+        }
+    }
+    map.into_iter().collect()
+}
+
+fn weekday_is_weekend(iso: &str) -> bool {
+    use chrono::Datelike;
+    chrono::NaiveDate::parse_from_str(iso, "%Y-%m-%d")
+        .map(|d| matches!(d.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun))
+        .unwrap_or(false)
+}
+
+fn short_day(iso: &str) -> String {
+    iso.get(8..10).unwrap_or("").trim_start_matches('0').to_string()
+}
+
+fn month_label(iso: &str, first: bool) -> String {
+    const M: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let day = iso.get(8..10).unwrap_or("");
+    if !first && day != "01" {
+        return String::new();
+    }
+    iso.get(5..7)
+        .and_then(|m| m.parse::<usize>().ok())
+        .filter(|m| (1..=12).contains(m))
+        .map(|m| M[m - 1].to_string())
+        .unwrap_or_default()
+}
+
+pub fn chart(o: &Opts) -> Result<String, String> {
+    let p = fetch(o)?;
+    // the filters `sessions` offers, applied through the session id -> day join
+    let filtering = o.user.is_some() || o.project.is_some() || o.provider.is_some();
+    let keep: Option<HashSet<String>> = filtering.then(|| {
+        let m = |want: &Option<String>, got: &str| match want {
+            Some(w) => got.to_lowercase().contains(&w.to_lowercase()),
+            None => true,
+        };
+        p.sessions
+            .iter()
+            .filter(|s| {
+                m(&o.user, field(s, "user"))
+                    && m(&o.project, field(s, "project"))
+                    && m(&o.provider, field(s, "provider"))
+            })
+            .map(|s| s.id.clone())
+            .collect()
+    });
+
+    let days = series_by_day(&p, o, keep.as_ref());
+    let mut out = header(&p, o);
+    if let Some(w) = &o.user {
+        out.push_str(&format!("\nfiltered to person ~ {w}"));
+    }
+    if let Some(w) = &o.project {
+        out.push_str(&format!("\nfiltered to project ~ {w}"));
+    }
+    if let Some(w) = &o.provider {
+        out.push_str(&format!("\nfiltered to tool ~ {w}"));
+    }
+    let totals: Vec<f64> = days.iter().map(|(_, v)| v.iter().sum()).collect();
+    let top = totals.iter().cloned().fold(0.0_f64, f64::max);
+    if days.is_empty() || top <= 0.0 {
+        out.push_str("\n\n  no usage in this window");
+        return Ok(out);
+    }
+
+    // Bars shrink so a 30-day window still fits a terminal rather than wrapping,
+    // which would scramble the columns into noise.
+    let n = days.len();
+    let slot = (96 / n.max(1)).clamp(2, 5);
+    let bw = (slot - 1).max(1);
+    let h = o.height;
+
+    let mut grid = vec![vec![' '; n * slot]; h];
+    for (c, (_, vals)) in days.iter().enumerate() {
+        let mut bounds = [0.0; 4];
+        let mut cum = 0.0;
+        for (i, v) in vals.iter().enumerate() {
+            cum += v.max(0.0);
+            bounds[i] = cum / top * h as f64;
+        }
+        for row in 0..h {
+            let mid = row as f64 + 0.5;
+            if mid > bounds[3] {
+                continue;
+            }
+            let k = bounds.iter().position(|b| mid <= *b).unwrap_or(3);
+            let block = STACK[k].1.chars().next().unwrap_or('#');
+            for w in 0..bw {
+                grid[row][c * slot + w] = block;
+            }
+        }
+    }
+
+    let unit = |v: f64| if o.cost_metric { money(v) } else { num(v as i64) };
+    let lw = 9;
+    for row in (0..h).rev() {
+        let tick = if row == h - 1 || row == (h - 1) / 2 || row == 0 {
+            unit(top * (row as f64 + 1.0) / h as f64)
+        } else {
+            String::new()
+        };
+        let line: String = grid[row].iter().collect();
+        out.push_str(&format!("\n  {:>lw$} |{}", tick, line.trim_end()));
+    }
+    out.push_str(&format!("\n  {:>lw$} +{}", "", "-".repeat(n * slot)));
+
+    let cell = |s: String| format!("{:>bw$}{}", s, " ".repeat(slot - bw));
+    let nums: String = days.iter().map(|(d, _)| cell(short_day(d))).collect();
+    let marks: String = days
+        .iter()
+        .map(|(d, _)| cell(if weekday_is_weekend(d) { "·".repeat(bw) } else { String::new() }))
+        .collect();
+    let months: String = days
+        .iter()
+        .enumerate()
+        .map(|(i, (d, _))| format!("{:<slot$}", month_label(d, i == 0)))
+        .collect();
+    out.push_str(&format!("\n  {:>lw$}  {}", "", nums.trim_end()));
+    if marks.trim().is_empty() {
+        // no weekend in the window; the marker row would be a blank line
+    } else {
+        out.push_str(&format!("\n  {:>lw$}  {}", "", marks.trim_end()));
+    }
+    out.push_str(&format!("\n  {:>lw$}  {}", "", months.trim_end()));
+
+    let legend: Vec<String> = STACK.iter().map(|(name, b)| format!("{b} {name}")).collect();
+    out.push_str(&format!(
+        "\n\n  {}   · weekend   (stacked, bottom to top)",
+        legend.join("   ")
+    ));
+    let total: f64 = totals.iter().sum();
+    let peak = totals
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| days[i].0.clone())
+        .unwrap_or_default();
+    out.push_str(&format!(
+        "\n  {} per day — total {}, peak {} on {}",
+        if o.cost_metric { "est. cost" } else { "tokens" },
+        unit(total),
+        unit(top),
+        peak
+    ));
+    Ok(out)
+}
+
 pub fn raw(o: &Opts) -> Result<String, String> {
     let cfg = load_config();
     let mut path = match o.days {
@@ -986,6 +1223,15 @@ mod tests {
         assert_eq!(num(2_400_000), "2.4M");
         assert_eq!(money(23.75), "$23.75");
         assert_eq!(money(0.0), "$0.00");
+        // matches the dashboard's fmtMoney: grouped above a thousand, and a
+        // floor marker so a real cost never reads as exactly zero
+        assert_eq!(money(27086.27), "$27,086");
+        assert_eq!(money(1000.0), "$1,000");
+        assert_eq!(money(999.994), "$999.99");
+        assert_eq!(money(0.001), "<$0.01");
+        assert_eq!(group(1), "1");
+        assert_eq!(group(999), "999");
+        assert_eq!(group(1234567), "1,234,567");
     }
 
     #[test]
@@ -1079,6 +1325,72 @@ mod tests {
             ..Default::default()
         }])[0].1.tokens;
         assert_eq!(per_session, per_day, "session and daily totals must agree");
+    }
+
+    fn chart_payload() -> Payload {
+        // one tall day and one short, so scaling and stacking are both visible
+        Payload {
+            generated_at: "2026-09-13T10:00:00+00:00".into(),
+            viewer: Viewer { org: "Acme".into() },
+            sessions: vec![s("s1", "ada@x.dev", "claude", "api", 10.0, "2026-09-12"),
+                           s("s2", "bob@x.dev", "codex", "web", 1.0, "2026-09-13")],
+            daily: vec![
+                Daily { s: "s1".into(), d: "2026-09-12".into(),
+                        cout: 10.0, cin: 10.0, ccw: 10.0, ccr: 70.0, ..Default::default() },
+                Daily { s: "s2".into(), d: "2026-09-13".into(),
+                        cout: 5.0, cin: 0.0, ccw: 0.0, ccr: 5.0, ..Default::default() },
+            ],
+        }
+    }
+
+    #[test]
+    fn the_chart_stacks_output_at_the_bottom_like_the_dashboard() {
+        let p = chart_payload();
+        let o = Opts { height: 10, ..Default::default() };
+        let days = series_by_day(&p, &o, None);
+        assert_eq!(days.len(), 2);
+        // STACK order is out, in, cache write, cache read -- bottom to top
+        assert_eq!(days[0].1, [10.0, 10.0, 10.0, 70.0]);
+        assert_eq!(STACK[0].0, "Output");
+        assert_eq!(STACK[3].0, "Cache read");
+    }
+
+    #[test]
+    fn the_chart_metric_switches_between_cost_and_tokens() {
+        let mut p = chart_payload();
+        p.daily[0].tokens_out = 400;
+        p.daily[0].cr = 600;
+        let cost = series_by_day(&p, &Opts::default(), None);
+        assert_eq!(cost[0].1[0], 10.0, "cost uses the c* columns");
+        let toks = series_by_day(&p, &Opts { cost_metric: false, ..Default::default() }, None);
+        assert_eq!(toks[0].1[0], 400.0, "tokens uses the raw counts");
+        assert_eq!(toks[0].1[3], 600.0);
+    }
+
+    #[test]
+    fn a_filter_keeps_only_the_matching_sessions_days() {
+        let p = chart_payload();
+        let keep: HashSet<String> = ["s2".to_string()].into_iter().collect();
+        let days = series_by_day(&p, &Opts::default(), Some(&keep));
+        assert_eq!(days.len(), 1, "only bob's day survives");
+        assert_eq!(days[0].0, "2026-09-13");
+    }
+
+    #[test]
+    fn weekends_are_detected_for_the_marker_row() {
+        assert!(weekday_is_weekend("2026-09-12")); // Saturday
+        assert!(weekday_is_weekend("2026-09-13")); // Sunday
+        assert!(!weekday_is_weekend("2026-09-11"));
+        assert!(!weekday_is_weekend("nonsense"));
+    }
+
+    #[test]
+    fn axis_labels_are_compact() {
+        assert_eq!(short_day("2026-09-05"), "5");
+        assert_eq!(short_day("2026-09-13"), "13");
+        assert_eq!(month_label("2026-09-01", false), "Sep");
+        assert_eq!(month_label("2026-09-13", true), "Sep"); // first column always
+        assert_eq!(month_label("2026-09-13", false), "");
     }
 
     #[test]
