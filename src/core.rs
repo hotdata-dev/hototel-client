@@ -20,6 +20,16 @@ pub struct Msg {
     pub costs: Option<[f64; 4]>, // precomputed (in, out, cache read, cache write)
 }
 
+/// The provider ids the parsers emit, and the exact strings that reach the
+/// server, the dashboard and `--provider`. Named here so the skill file can be
+/// tested against them: documenting "claude-code" (which nothing emits) made
+/// `--provider claude-code` match nothing and read as "nobody uses Claude
+/// Code" -- a confidently wrong answer, which is worse than an error.
+pub const PROVIDERS: [&str; 3] = [CLAUDE, CODEX, OPENCODE];
+pub const CLAUDE: &str = "claude";
+pub const CODEX: &str = "codex";
+pub const OPENCODE: &str = "opencode";
+
 /// A session before building: parser output, merged across files by (provider, id).
 pub struct RawSession {
     pub provider: &'static str,

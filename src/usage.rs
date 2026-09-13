@@ -726,6 +726,13 @@ pub fn sessions(o: &Opts) -> Result<String, String> {
                 && matches(&o.provider, field(s, "provider"))
         })
         .collect();
+    // An unknown --provider yields "0 matching sessions", which an agent will
+    // report as "nobody uses it" rather than as a typo. Say so instead: this is
+    // the exact trap `claude-code` set, since the real id is `claude`.
+    let unknown_provider = o.provider.as_deref().filter(|w| {
+        let w = w.to_lowercase();
+        !crate::core::PROVIDERS.iter().any(|p| p.contains(&w))
+    });
     let mut out = format!(
         "{}\n{} matching sessions\n\n{}",
         header(&p, o),
@@ -762,6 +769,13 @@ pub fn sessions(o: &Opts) -> Result<String, String> {
             "\n\n  showing {} of {}; raise it with --limit",
             o.limit,
             rows.len()
+        ));
+    }
+    if let Some(w) = unknown_provider {
+        out.push_str(&format!(
+            "\n\n  note: '{w}' is not a known tool, so this matched nothing on \
+             that filter. Valid ids are {}.",
+            crate::core::PROVIDERS.join(", ")
         ));
     }
     Ok(out)
@@ -1065,6 +1079,18 @@ mod tests {
             ..Default::default()
         }])[0].1.tokens;
         assert_eq!(per_session, per_day, "session and daily totals must agree");
+    }
+
+    #[test]
+    fn an_unknown_provider_filter_is_reported_not_silently_empty() {
+        let known = |w: &str| {
+            let w = w.to_lowercase();
+            crate::core::PROVIDERS.iter().any(|p| p.contains(&w))
+        };
+        assert!(known("claude") && known("codex") && known("code"));
+        // the trap: the real id is `claude`, so this matches nothing
+        assert!(!known("claude-code"));
+        assert!(!known("cursor"));
     }
 
     #[test]
