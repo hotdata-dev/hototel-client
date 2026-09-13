@@ -1085,10 +1085,20 @@ pub fn chart(o: &Opts) -> Result<String, String> {
     }
 
     let unit = |v: f64| if o.cost_metric { money(v) } else { num(v as i64) };
+    // The y-axis is a scale, not a set of values, so every tick on it shares a
+    // format. money() drops cents only above $1,000, which left one axis
+    // reading "$1,924 / $962.06 / $106.90" -- three shapes for one ruler. The
+    // precision is chosen from the top of the scale, so a small chart still
+    // gets cents where they carry the only signal.
+    let tick_of = |v: f64| match (o.cost_metric, top >= 100.0) {
+        (false, _) => num(v as i64),
+        (true, true) => format!("${}", group(v.round() as i64)),
+        (true, false) => money(v),
+    };
     let lw = 9;
     for row in (0..h).rev() {
         let tick = if row == h - 1 || row == (h - 1) / 2 || row == 0 {
-            unit(top * (row as f64 + 1.0) / h as f64)
+            tick_of(top * (row as f64 + 1.0) / h as f64)
         } else {
             String::new()
         };
@@ -1472,6 +1482,28 @@ mod tests {
             }
             assert!(!cells.is_empty(), "{n} days produced no labels");
         }
+    }
+
+    #[test]
+    fn every_tick_on_one_axis_shares_a_format() {
+        // one ruler, one shape: "$1,924 / $962.06 / $106.90" mixed grouped
+        // dollars with cents on the same axis
+        let ticks = |top: f64, cost: bool| -> Vec<String> {
+            let t = |v: f64| match (cost, top >= 100.0) {
+                (false, _) => num(v as i64),
+                (true, true) => format!("${}", group(v.round() as i64)),
+                (true, false) => money(v),
+            };
+            [top, top / 2.0, top / 18.0].iter().map(|v| t(*v)).collect()
+        };
+        let big = ticks(1924.12, true);
+        assert_eq!(big, vec!["$1,924", "$962", "$107"], "{big:?}");
+        assert!(big.iter().all(|t| !t.contains('.')), "cents on a big axis");
+        // a small chart keeps cents, where they are the only signal there is
+        let small = ticks(4.5, true);
+        assert!(small.iter().all(|t| t.contains('.')), "{small:?}");
+        let toks = ticks(1_800_000_000.0, false);
+        assert_eq!(toks[0], "1.8B");
     }
 
     #[test]
