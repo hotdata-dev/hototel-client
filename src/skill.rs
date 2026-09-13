@@ -52,7 +52,12 @@ fn binary_path() -> String {
 const MARKER: &str = "<!-- installed by hotusage; local edits are overwritten -->";
 
 fn rendered() -> String {
-    format!("{}\n{MARKER}\n", TEMPLATE.replace("{{BIN}}", &binary_path()))
+    // CRLF is normalized away, not tolerated: on Windows git checks this file
+    // out with CRLF unless .gitattributes says otherwise, include_str! embeds
+    // exactly what is on disk, and the frontmatter an agent parses would then
+    // start "---\r\n". The file we write is LF on every platform.
+    let body = TEMPLATE.replace("\r\n", "\n").replace("{{BIN}}", &binary_path());
+    format!("{body}\n{MARKER}\n")
 }
 
 fn is_ours(path: &Path) -> bool {
@@ -140,11 +145,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_template_is_a_usable_skill_file() {
-        // frontmatter is what makes an agent pick it up at all
-        assert!(TEMPLATE.starts_with("---\n"), "needs YAML frontmatter");
-        assert!(TEMPLATE.contains("\nname: hotusage\n"));
-        assert!(TEMPLATE.contains("\ndescription: "));
+    fn the_written_file_is_a_usable_skill_file() {
+        // Assert on what is WRITTEN, not on the embedded template: a Windows
+        // checkout can hand include_str! CRLF, and the agent only ever sees
+        // the rendered output. Frontmatter is what makes a skill load at all.
+        let out = rendered();
+        assert!(out.starts_with("---\n"), "needs YAML frontmatter");
+        assert!(out.contains("\nname: hotusage\n"));
+        assert!(out.contains("\ndescription: "));
+        assert!(!out.contains('\r'), "CRLF must not reach the agent");
         assert!(TEMPLATE.contains("{{BIN}}"), "nothing to substitute");
     }
 
