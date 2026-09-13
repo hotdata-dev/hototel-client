@@ -43,11 +43,18 @@ Every reporting command takes `--days 7|30|90` (default 30) or `--days all`, and
 | `{{BIN}} providers` | Per-tool: `claude` (Claude Code) vs `codex` vs `opencode`. |
 | `{{BIN}} models` | Which models sessions touched, and how many people used each. |
 | `{{BIN}} daily` | Day-by-day tokens and cost — the series to read trends from. |
+| `{{BIN}} chart` | The same day-by-day series as a stacked ASCII bar chart. `--metric cost\|tokens`, `--height N`, and the `sessions` filters. |
 | `{{BIN}} sessions` | Individual sessions. `--user` `--project` `--provider` (substring match; provider is `claude`/`codex`/`opencode`), `--limit N` |
 | `{{BIN}} session <id>` | One session request-by-request: context growth and output per turn. |
 | `{{BIN}} raw` | The entire payload as JSON. |
 
 ## How to use it well
+
+**Reach for `chart` when the question is about shape** — a trend, a spike, "what
+does our usage look like", or anything the person would otherwise ask you to
+draw. It is one call and renders the same stacked series as the dashboard, so
+do not hand-build a chart out of `raw`. It takes `--user`, `--project` and
+`--provider` too, which is how you show who or what drove a spike.
 
 **Run `summary` first** for almost any question. It is one call and usually
 contains the answer or tells you which breakdown to reach for next.
@@ -97,7 +104,12 @@ apart from here.
 - `requests` is turns in the session, not API calls.
 - `context tokens` is how full the context window got — useful for spotting
   sessions that were fighting the context limit.
-- Days with no usage are absent from `daily` rather than present as zero.
+- Days with no usage are absent from `daily` and from `chart` rather than
+  present as zero. Under a filter this is more noticeable: a person's chart
+  skips the days they did not work, so the x-axis can have gaps.
+- `chart` bars narrow automatically so a 30-day window still fits a terminal.
+  A series too small to fill one row simply does not appear — say so rather
+  than reporting it as zero.
 
 ## Privacy
 
