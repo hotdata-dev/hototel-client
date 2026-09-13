@@ -104,7 +104,9 @@ pub fn load_config() -> Config {
         let _ = save_config(&cfg);
     }
     if !config_path().is_file() {
-        let _ = fs::write(config_path(), serde_json::to_string_pretty(&cfg).unwrap());
+        // save_config writes atomically and tightens the mode before the
+        // rename, so the file is never briefly visible with open permissions
+        let _ = save_config(&cfg);
     }
     restrict(&config_path(), 0o600);
     cfg
@@ -165,8 +167,13 @@ fn fingerprint(b: &Built) -> String {
 fn is_loopback(url: &str) -> bool {
     let host = url
         .split_once("//")
-        .map(|(_, rest)| rest.split('/').next().unwrap_or(""))
+        .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(""))
         .unwrap_or("");
+    // userinfo can disguise the real host ("localhost:x@evil.example" parses
+    // to host "localhost" below), and no legitimate loopback URL needs it
+    if host.contains('@') {
+        return false;
+    }
     let host = if host.starts_with('[') {
         // bracketed IPv6: strip only a port after the closing bracket
         host.split_once(']').map_or(host, |(h, _)| &host[..h.len() + 1])
@@ -442,5 +449,9 @@ mod tests {
         assert!(!is_loopback("https://hotusage.ai"));
         assert!(!is_loopback("https://localhost.example.net"));
         assert!(!is_loopback("https://127.0.0.1.example.net:443"));
+        // userinfo must not disguise the real host
+        assert!(!is_loopback("http://localhost:x@evil.example"));
+        assert!(!is_loopback("http://127.0.0.1@evil.example/"));
+        assert!(!is_loopback("http://user@localhost")); // fail closed: no userinfo at all
     }
 }

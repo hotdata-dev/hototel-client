@@ -10,7 +10,28 @@ use crate::core::{rates_claude, rates_openai, truncate_chars, Msg, RawSession};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
+
+/// Stream a file line by line. Transcript files run to hundreds of MB, and the
+/// collector re-reads all of them every cycle for the life of the machine, so
+/// they must never be pulled into memory whole. A line of invalid UTF-8 is
+/// skipped on its own; an I/O error ends the file (it would repeat forever).
+fn lines(path: &Path) -> Option<impl Iterator<Item = String>> {
+    let file = fs::File::open(path).ok()?;
+    Some(
+        std::io::BufReader::new(file)
+            .split(b'\n')
+            .map_while(Result::ok)
+            .filter_map(|b| {
+                let mut s = String::from_utf8(b).ok()?;
+                if s.ends_with('\r') {
+                    s.pop();
+                }
+                Some(s)
+            }),
+    )
+}
 
 pub fn home_dir() -> PathBuf {
     std::env::var("HOME")
@@ -52,7 +73,6 @@ fn parse_claude_file(path: &Path) -> Option<RawSession> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
     let session_id = path.file_stem()?.to_string_lossy().to_string();
-    let content = fs::read_to_string(path).ok()?;
 
     let mut msgs: HashMap<String, Msg> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
@@ -60,9 +80,9 @@ fn parse_claude_file(path: &Path) -> Option<RawSession> {
     let mut first_prompt: Option<String> = None;
     let mut cwd_counts: HashMap<String, u32> = HashMap::new();
 
-    for line in content.lines() {
+    for line in lines(path)? {
         if line.contains("\"assistant\"") {
-            let Ok(o) = serde_json::from_str::<Value>(line) else { continue };
+            let Ok(o) = serde_json::from_str::<Value>(&line) else { continue };
             if o.get("type").and_then(|t| t.as_str()) != Some("assistant") {
                 continue;
             }
@@ -97,12 +117,12 @@ fn parse_claude_file(path: &Path) -> Option<RawSession> {
                 *cwd_counts.entry(cwd).or_insert(0) += 1;
             }
         } else if title.is_none() && line.contains("\"ai-title\"") {
-            let Ok(o) = serde_json::from_str::<Value>(line) else { continue };
+            let Ok(o) = serde_json::from_str::<Value>(&line) else { continue };
             if o.get("type").and_then(|t| t.as_str()) == Some("ai-title") {
                 title = jstr(&o, "aiTitle");
             }
         } else if first_prompt.is_none() && line.contains("\"user\"") {
-            let Ok(o) = serde_json::from_str::<Value>(line) else { continue };
+            let Ok(o) = serde_json::from_str::<Value>(&line) else { continue };
             if o.get("type").and_then(|t| t.as_str()) == Some("user") {
                 if let Some(content) = o.pointer("/message/content").and_then(|c| c.as_str()) {
                     let t = content.trim();
@@ -149,7 +169,6 @@ fn codex_usage(v: &Value) -> [i64; 3] {
 }
 
 fn parse_codex_file(path: &Path, titles: &HashMap<String, String>) -> Option<RawSession> {
-    let content = fs::read_to_string(path).ok()?;
     let mut session_id: Option<String> = None;
     let mut cwd: Option<String> = None;
     let mut first_prompt: Option<String> = None;
@@ -157,9 +176,9 @@ fn parse_codex_file(path: &Path, titles: &HashMap<String, String>) -> Option<Raw
     let mut prev: Option<[i64; 3]> = None;
     let mut msgs: Vec<Msg> = Vec::new();
 
-    for line in content.lines() {
+    for line in lines(path)? {
         if line.contains("\"turn_context\"") {
-            let Ok(o) = serde_json::from_str::<Value>(line) else { continue };
+            let Ok(o) = serde_json::from_str::<Value>(&line) else { continue };
             if o.get("type").and_then(|t| t.as_str()) == Some("turn_context") {
                 if let Some(m) = o.pointer("/payload/model").and_then(|x| x.as_str()) {
                     if !m.is_empty() {
@@ -168,14 +187,14 @@ fn parse_codex_file(path: &Path, titles: &HashMap<String, String>) -> Option<Raw
                 }
             }
         } else if session_id.is_none() && line.contains("\"session_meta\"") {
-            let Ok(o) = serde_json::from_str::<Value>(line) else { continue };
+            let Ok(o) = serde_json::from_str::<Value>(&line) else { continue };
             if o.get("type").and_then(|t| t.as_str()) == Some("session_meta") {
                 let p = o.get("payload").cloned().unwrap_or(Value::Null);
                 session_id = jstr(&p, "id").or_else(|| jstr(&p, "session_id"));
                 cwd = jstr(&p, "cwd");
             }
         } else if line.contains("\"token_count\"") {
-            let Ok(o) = serde_json::from_str::<Value>(line) else { continue };
+            let Ok(o) = serde_json::from_str::<Value>(&line) else { continue };
             if o.get("type").and_then(|t| t.as_str()) != Some("event_msg") {
                 continue;
             }
@@ -209,7 +228,7 @@ fn parse_codex_file(path: &Path, titles: &HashMap<String, String>) -> Option<Raw
                 ..Default::default()
             });
         } else if first_prompt.is_none() && line.contains("\"user_message\"") {
-            let Ok(o) = serde_json::from_str::<Value>(line) else { continue };
+            let Ok(o) = serde_json::from_str::<Value>(&line) else { continue };
             if o.get("type").and_then(|t| t.as_str()) == Some("event_msg")
                 && o.pointer("/payload/type").and_then(|t| t.as_str()) == Some("user_message")
             {
