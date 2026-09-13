@@ -11,6 +11,7 @@
 //!   hotusage signin           sign in through the browser (--force to re-authorize)
 //!   hotusage signout          revoke this machine's token and forget it
 //!   hotusage whoami           who this machine is signed in as, and what it may do
+//!   hotusage version          which build this is, and where it lives
 //!   hotusage sync             sync now, then exit
 //!   hotusage daemon           headless sync loop (any OS)
 //!   hotusage dump             print parsed sessions as JSON (debug)
@@ -191,6 +192,21 @@ fn run_signout() -> ! {
     std::process::exit(0);
 }
 
+/// What this binary is, in one line.
+///
+/// Exists because diagnosing a stale install otherwise means comparing SHA-256
+/// sums against release assets -- which is absurd for a tool that upgrades
+/// itself, and cost real time the first time a release raced an install.
+fn run_version() -> ! {
+    print_out(&format!(
+        "hotusage {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "unknown path".into())
+    ));
+}
+
 fn run_whoami() -> ! {
     let cfg = sync::load_config();
     if cfg.token.trim().is_empty() {
@@ -202,7 +218,12 @@ fn run_whoami() -> ! {
     } else {
         "reports usage only (run `hotusage signin --force` to add read access)"
     };
-    println!("{} at {}\n  {can}", cfg.user_email, cfg.server_url);
+    println!(
+        "{} at {}\n  {can}\n  hotusage {}",
+        cfg.user_email,
+        cfg.server_url,
+        env!("CARGO_PKG_VERSION")
+    );
     std::process::exit(0);
 }
 
@@ -320,6 +341,7 @@ fn main() {
         "signin" => run_signin(flag("--force")),
         "signout" => run_signout(),
         "whoami" => run_whoami(),
+        "version" | "--version" | "-V" => run_version(),
         "skill" => run_skill(&rest),
         // `--once`/`--dump`/`--daemon` are how already-registered services and
         // older docs invoke this, so both spellings stay.
@@ -342,6 +364,24 @@ fn main() {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    /// install.sh parses `hotusage version` to prove the binary on disk is the
+    /// build it just downloaded, with `awk '{print $2}'`. That contract is easy
+    /// to break by reformatting this line, and breaking it silently re-opens
+    /// the stale-install hole the command exists to close.
+    #[test]
+    fn the_version_line_stays_parseable_by_the_installer() {
+        let line = format!("hotusage {} (/some/path)", env!("CARGO_PKG_VERSION"));
+        let second = line.split_whitespace().nth(1).expect("no second field");
+        assert_eq!(second, env!("CARGO_PKG_VERSION"));
+        // and it is a bare version, not "v1.2.3" -- install.sh compares it to
+        // the tag with the leading v stripped
+        assert!(!second.starts_with('v'), "{second}");
+        assert!(second.split('.').count() >= 2, "{second}");
+    }
+}
+
 const USAGE: &str = "\
 hotusage — usage analytics for AI coding agents
 
@@ -351,6 +391,7 @@ hotusage — usage analytics for AI coding agents
   hotusage signin [--force]  sign in through the browser
   hotusage signout           revoke this machine's token
   hotusage whoami            who this machine is signed in as, and what it may do
+  hotusage version           which build this is, and where it lives
   hotusage sync              sync now, then exit
   hotusage daemon            headless sync loop
   hotusage dump              print parsed sessions as JSON (debug)

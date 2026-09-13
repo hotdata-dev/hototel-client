@@ -95,6 +95,21 @@ fi
 rm -f "$dest/$BIN"
 mv "$tmp/$BIN" "$dest/$BIN"
 echo "installed $dest/$BIN"
+
+# Prove the binary on disk is the one just downloaded. A release that is still
+# building when this runs makes the GitHub "latest" API serve the PREVIOUS tag,
+# and the install then silently succeeds with an older build -- which looks
+# exactly like the new one until some fixed behaviour is missing. Fail loudly
+# instead of leaving someone to compare checksums.
+want="${tag#v}"
+got=$("$dest/$BIN" version 2>/dev/null | awk '{print $2}')
+if [ -z "$got" ]; then
+  echo "note: $BIN has no 'version' command; skipping the install check (pre-0.5.2 build?)" >&2
+elif [ "$got" != "$want" ]; then
+  echo "error: installed $BIN reports $got but $tag was downloaded" >&2
+  echo "  the release may still be building; re-run this installer in a minute" >&2
+  exit 1
+fi
 case ":$PATH:" in
   *":$dest:"*) ;;
   *) echo "note: $dest is not on your PATH - add it to your shell profile" ;;
