@@ -3,14 +3,6 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/install.sh | sh
 #
-# To pin a known release instead of whatever "latest" resolves to, set
-# HOTUSAGE_VERSION. In a piped install it goes on `sh`, not on `curl` -- this
-# script is what reads it, and curl never sees the environment:
-#
-#   curl -fsSL .../install.sh | HOTUSAGE_VERSION=0.5.2 sh
-#
-# A pinned install also verifies that the binary it wrote reports that version.
-#
 # Downloads the latest release binary for this machine, puts it on PATH,
 # registers it as a background agent (macOS LaunchAgent / systemd user unit),
 # and installs the agent skill so Claude Code and Codex can answer questions
@@ -43,22 +35,11 @@ esac
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# HOTUSAGE_VERSION pins the install to a known tag. Worth having on its own
-# (reproducible installs, rollback), and it is the only way the post-install
-# check below can prove anything about WHICH release landed: asking the
-# releases/latest API and then validating against that same answer cannot
-# detect a stale answer.
-pinned=${HOTUSAGE_VERSION:-}
-if [ -n "$pinned" ]; then
-  case "$pinned" in v*) tag=$pinned ;; *) tag="v$pinned" ;; esac
-  echo "downloading $BIN $tag ($os $arch)..."
-else
-  echo "downloading the latest $BIN release ($os $arch)..."
-  # resolve the latest tag, then fetch the matching asset by name
-  tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
-    sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
-  [ -n "$tag" ] || { echo "error: could not resolve the latest release tag" >&2; exit 1; }
-fi
+echo "downloading the latest $BIN release ($os $arch)..."
+# resolve the latest tag, then fetch the matching asset by name
+tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
+  sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+[ -n "$tag" ] || { echo "error: could not resolve the latest release tag" >&2; exit 1; }
 asset="$BIN-${tag#v}-$suffix"
 curl -fsSL -o "$tmp/$asset" \
   "https://github.com/$REPO/releases/download/$tag/$asset" || {
@@ -115,31 +96,21 @@ rm -f "$dest/$BIN"
 mv "$tmp/$BIN" "$dest/$BIN"
 echo "installed $dest/$BIN"
 
-# Check the installed binary against the tag that was asked for.
-#
-# What this proves depends on where $tag came from. Pinned with
-# HOTUSAGE_VERSION it proves the requested release is the one now on disk --
-# the check that would have caught a release still building while the
-# releases/latest API served the previous tag. Resolved from that API it can
-# only prove the archive holds the binary its own name claims, since a stale
-# answer would make both sides agree; that still catches a mis-built release,
-# which is worth having, but it is not a staleness check.
+# Sanity-check the archive against its own name: $tag came from the same API
+# call that chose the download, so this cannot tell whether that answer was
+# current -- only that the binary inside the archive is the build the archive
+# claims to be. That is a mis-built release, not a stale one, and it is the
+# honest limit of what can be checked from here.
 want="${tag#v}"
 got=$("$dest/$BIN" version 2>/dev/null | awk '{print $2}')
 if [ -z "$got" ]; then
-  # never say "verified" here: a skipped check that announces success is the
-  # false confidence this whole block exists to remove
-  echo "note: $BIN has no 'version' command; skipping the install check (pre-0.5.2 build?)" >&2
+  # no "verified" line anywhere: a check that announces success it did not
+  # perform is worse than no check
+  echo "note: $BIN has no 'version' command; skipping the archive check (pre-0.5.2 build?)" >&2
 elif [ "$got" != "$want" ]; then
-  echo "error: installed $BIN reports $got but $tag was requested" >&2
-  if [ -n "$pinned" ]; then
-    echo "  $tag may still be building, or its assets are mis-built" >&2
-  else
-    echo "  the $tag archive does not contain the build its name claims" >&2
-  fi
+  echo "error: the $tag archive contains $BIN $got, not $want" >&2
+  echo "  that release's assets are mis-built; report it rather than using this binary" >&2
   exit 1
-elif [ -n "$pinned" ]; then
-  echo "verified $BIN $got"
 fi
 case ":$PATH:" in
   *":$dest:"*) ;;
