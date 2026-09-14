@@ -13,6 +13,7 @@
 //! that did not exist before: nothing told anyone their machine was stale, and
 //! a fleet can sit on half a dozen builds without it showing anywhere.
 
+#[cfg(unix)]
 use crate::service::safe_command;
 
 const REPO: &str = "hotdata-dev/hotusage-client";
@@ -46,7 +47,13 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
 
 fn latest_release() -> Result<String, String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let mut resp = ureq::get(&url)
+    // a version check must never hang the command it is gating
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .build()
+        .into();
+    let mut resp = agent
+        .get(&url)
         // GitHub rejects an API request with no User-Agent
         .header("User-Agent", "hotusage")
         .call()
@@ -75,15 +82,46 @@ fn latest_release() -> Result<String, String> {
 /// Windows releases are a zip with no scripted install path.
 #[cfg(unix)]
 fn run_installer() -> Result<(), String> {
+    // Download to a file FIRST, then run the file.
+    //
+    // `curl ... | sh` reports the exit status of the right-hand side, and a
+    // shell handed an empty stdin exits 0 -- so a failed download would look
+    // like a successful update that installed nothing. A truncated body is
+    // worse than that: install.sh removes the old binary before moving the new
+    // one into place, so a script cut between those two lines would leave the
+    // machine with no binary at all. Curl's own status catches both (it fails
+    // on a partial transfer), but only if something reads it.
+    let script = std::env::temp_dir().join(format!("hotusage-install-{}.sh", std::process::id()));
+    let dl = safe_command("curl")
+        .args(["-fsSL", "--proto", "=https", "--tlsv1.2", "-o"])
+        .arg(&script)
+        .arg(INSTALLER)
+        .status()
+        .map_err(|e| format!("could not run curl: {e}"))?;
+    if !dl.success() {
+        let _ = std::fs::remove_file(&script);
+        return Err(format!(
+            "could not download the installer (curl exited {}); nothing was changed",
+            dl.code().unwrap_or(-1)
+        ));
+    }
+    // a zero-length or non-script body means something answered that was not
+    // the installer -- a captive portal, a proxy error page
+    let body = std::fs::read_to_string(&script)
+        .map_err(|e| format!("could not read the downloaded installer: {e}"))?;
+    if !body.starts_with("#!") || body.len() < 512 {
+        let _ = std::fs::remove_file(&script);
+        return Err("what downloaded is not the installer; nothing was changed".into());
+    }
     println!("hotusage: running the installer...\n");
     // The running binary keeps its own inode when install.sh unlinks the path,
     // so replacing it underneath this process is safe -- this command finishes
     // on the old build and the next invocation is the new one.
     let status = safe_command("sh")
-        .arg("-c")
-        .arg(format!("curl -fsSL {INSTALLER} | sh"))
+        .arg(&script)
         .status()
         .map_err(|e| format!("could not run the installer: {e}"))?;
+    let _ = std::fs::remove_file(&script);
     if status.success() {
         Ok(())
     } else {
@@ -110,6 +148,13 @@ pub fn run(check_only: bool, force: bool) -> i32 {
             return 1;
         }
     };
+    if parse_version(&latest).is_none() {
+        // saying "you are on the latest" when the comparison never happened is
+        // the failure this command exists to prevent
+        eprintln!("hotusage: cannot read the latest release tag ({latest})");
+        eprintln!("hotusage: installed version is {CURRENT}");
+        return 1;
+    }
     let newer = is_newer(CURRENT, &latest);
     if !newer && !force {
         // say which is installed either way: "up to date" alone is the kind of
@@ -169,6 +214,18 @@ mod tests {
         assert!(!is_newer("0.6.1", "nonsense"));
         assert!(!is_newer("nonsense", "0.6.1"));
         assert!(!is_newer("", ""));
+    }
+
+    #[test]
+    fn a_downloaded_body_that_is_not_a_script_is_rejected() {
+        // the guard run_installer applies before executing anything: a proxy
+        // error page or a captive portal answers 200 with HTML
+        let looks_ok = |b: &str| b.starts_with("#!") && b.len() >= 512;
+        assert!(!looks_ok("<html>nope</html>"));
+        assert!(!looks_ok(""));
+        assert!(!looks_ok("#!/bin/sh\necho hi\n")); // too short to be install.sh
+        let real = std::fs::read_to_string("install.sh").expect("install.sh");
+        assert!(looks_ok(&real), "the real installer must pass its own guard");
     }
 
     #[test]

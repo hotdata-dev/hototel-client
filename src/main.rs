@@ -404,7 +404,9 @@ hotusage — usage analytics for AI coding agents
   hotusage signout           revoke this machine's token
   hotusage whoami            who this machine is signed in as, and what it may do
   hotusage version           which build this is, and where it lives
-  hotusage update [--check]  install the latest release (--check only reports)
+  hotusage update            install the latest release if there is one
+                             --check reports only (exit 10 = stale)
+                             --force reinstalls even when already current
   hotusage sync              sync now, then exit
   hotusage daemon            headless sync loop
   hotusage dump              print parsed sessions as JSON (debug)
