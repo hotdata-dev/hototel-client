@@ -44,15 +44,79 @@ fn open_config() {
 /// Flame silhouette, pre-rasterized to a 36x36 alpha mask and baked into the
 /// binary. Colorized per platform: black on macOS (a template image, so the
 /// system recolors it for dark/light menu bars), white on the Windows tray.
-const FLAME_ALPHA: &[u8] = include_bytes!("../assets/flame_alpha_36.bin");
-const FLAME_SIZE: u32 = 36;
+/// The nine-cell mark from the website, drawn at runtime.
+///
+/// Mirrors server/static/icon.svg exactly: a 32-unit grid, 8-unit cells with a
+/// 2.5-unit corner radius at 3/12/21, warming toward the bottom-right corner.
+/// Kept as geometry rather than a bitmap so the same numbers can be checked
+/// against the SVG by eye, and so any tray size renders crisply.
+const ICON_PX: u32 = 36;
+const GRID: f32 = 32.0;
+const CELL: f32 = 8.0;
+const RADIUS: f32 = 2.5;
+const ORIGINS: [f32; 3] = [3.0, 12.0, 21.0];
 
-fn flame_icon(shade: u8) -> tray_icon::Icon {
-    let mut rgba = Vec::with_capacity(FLAME_ALPHA.len() * 4);
-    for &a in FLAME_ALPHA {
-        rgba.extend_from_slice(&[shade, shade, shade, a]);
+/// (r, g, b, opacity) per cell, row-major from the top-left. The greys sit at
+/// reduced opacity in the SVG; the warm cells are solid.
+const CELLS: [(u8, u8, u8, f32); 9] = [
+    (0x89, 0x87, 0x81, 0.45), (0x89, 0x87, 0x81, 0.70), (0x2a, 0x78, 0xd6, 0.70),
+    (0x89, 0x87, 0x81, 0.70), (0x1b, 0xaf, 0x7a, 1.00), (0xed, 0xa1, 0x00, 1.00),
+    (0x2a, 0x78, 0xd6, 0.70), (0xed, 0xa1, 0x00, 1.00), (0xeb, 0x68, 0x34, 1.00),
+];
+
+/// Coverage of one rounded cell at a point, 0..=1, sampled on a 3x3 grid inside
+/// the pixel. Anti-aliasing matters more than usual here: the mark is nine small
+/// rounded squares, and aliased corners read as dirt at menu-bar size.
+fn cell_coverage(px: f32, py: f32, x0: f32, y0: f32, unit: f32) -> f32 {
+    let (x1, y1) = (x0 + CELL, y0 + CELL);
+    let mut hits = 0u32;
+    for sy in 0..3 {
+        for sx in 0..3 {
+            let x = (px + (sx as f32 + 0.5) / 3.0) * unit;
+            let y = (py + (sy as f32 + 0.5) / 3.0) * unit;
+            if x < x0 || x > x1 || y < y0 || y > y1 {
+                continue;
+            }
+            // inside the straight-edged core, or within the radius of the
+            // nearest corner centre
+            let cx = x.clamp(x0 + RADIUS, x1 - RADIUS);
+            let cy = y.clamp(y0 + RADIUS, y1 - RADIUS);
+            if (x - cx).powi(2) + (y - cy).powi(2) <= RADIUS * RADIUS {
+                hits += 1;
+            }
+        }
     }
-    tray_icon::Icon::from_rgba(rgba, FLAME_SIZE, FLAME_SIZE).expect("icon")
+    hits as f32 / 9.0
+}
+
+fn logo_rgba(size: u32) -> Vec<u8> {
+    let unit = GRID / size as f32; // icon units per pixel
+    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
+    for py in 0..size {
+        for px in 0..size {
+            let (mut r, mut g, mut b, mut a) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+            for (i, &(cr, cg, cb, op)) in CELLS.iter().enumerate() {
+                let cov = cell_coverage(px as f32, py as f32, ORIGINS[i % 3], ORIGINS[i / 3], unit);
+                if cov <= 0.0 {
+                    continue;
+                }
+                // cells never overlap, so a straight accumulate is exact
+                let alpha = cov * op;
+                r += cr as f32 * alpha;
+                g += cg as f32 * alpha;
+                b += cb as f32 * alpha;
+                a += alpha;
+            }
+            // un-premultiply: Icon::from_rgba wants straight alpha
+            let out = |c: f32| if a > 0.0 { (c / a).round().clamp(0.0, 255.0) as u8 } else { 0 };
+            rgba.extend_from_slice(&[out(r), out(g), out(b), (a * 255.0).round() as u8]);
+        }
+    }
+    rgba
+}
+
+fn logo_icon() -> tray_icon::Icon {
+    tray_icon::Icon::from_rgba(logo_rgba(ICON_PX), ICON_PX, ICON_PX).expect("icon")
 }
 
 pub fn run() -> ! {
@@ -147,10 +211,15 @@ pub fn run() -> ! {
                 status_item = Some(status);
                 user_item = Some(user);
                 let builder = TrayIconBuilder::new().with_menu(Box::new(menu));
+                // NOT a template image: macOS renders template icons as a
+                // monochrome mask, which would throw the colour away. The mark
+                // carries its own contrast -- the greys are the muted token,
+                // whose value is identical in both themes -- so it reads on a
+                // light or a dark menu bar alike.
                 #[cfg(target_os = "macos")]
-                let builder = builder.with_icon(flame_icon(0)).with_icon_as_template(true);
+                let builder = builder.with_icon(logo_icon()).with_icon_as_template(false);
                 #[cfg(target_os = "windows")]
-                let builder = builder.with_icon(flame_icon(255)).with_tooltip("hotusage");
+                let builder = builder.with_icon(logo_icon()).with_tooltip("hotusage");
                 _tray = Some(builder.build().expect("failed to create tray icon"));
                 let _ = sync_proxy.send_event(UserEvent::SyncRequested);
             }
@@ -303,4 +372,63 @@ pub fn run() -> ! {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pixel(rgba: &[u8], size: u32, x: u32, y: u32) -> (u8, u8, u8, u8) {
+        let i = ((y * size + x) * 4) as usize;
+        (rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3])
+    }
+
+    #[test]
+    fn the_mark_matches_the_websites_icon_svg() {
+        // Nine cells, same colours and opacities as server/static/icon.svg. If
+        // the site's mark changes, this fails rather than letting the tray and
+        // the dashboard drift apart.
+        let size = ICON_PX;
+        let rgba = logo_rgba(size);
+        assert_eq!(rgba.len(), (size * size * 4) as usize);
+        let unit = GRID / size as f32;
+        for (i, &(r, g, b, op)) in CELLS.iter().enumerate() {
+            let cx = ((ORIGINS[i % 3] + CELL / 2.0) / unit) as u32;
+            let cy = ((ORIGINS[i / 3] + CELL / 2.0) / unit) as u32;
+            let got = pixel(&rgba, size, cx, cy);
+            assert_eq!((got.0, got.1, got.2), (r, g, b), "cell {i} colour");
+            let want_a = (op * 255.0).round() as u8;
+            assert!(
+                got.3.abs_diff(want_a) <= 2,
+                "cell {i} alpha {} wanted {want_a}",
+                got.3
+            );
+        }
+    }
+
+    #[test]
+    fn the_corners_are_transparent_and_the_grid_has_gaps() {
+        let size = ICON_PX;
+        let rgba = logo_rgba(size);
+        // outside the 3..29 grid entirely
+        assert_eq!(pixel(&rgba, size, 0, 0).3, 0, "top-left corner");
+        assert_eq!(pixel(&rgba, size, size - 1, size - 1).3, 0, "bottom-right");
+        // the mark must read as nine cells, not one block: the middle of a gap
+        // between columns (x = 11.5 units) is empty
+        let unit = GRID / size as f32;
+        let gap_x = (11.5 / unit) as u32;
+        let mid_y = (16.0 / unit) as u32;
+        assert!(pixel(&rgba, size, gap_x, mid_y).3 < 80, "column gap filled in");
+    }
+
+    #[test]
+    fn it_renders_at_any_size() {
+        // the geometry is unit-based, so a retina or Windows tray size works
+        for size in [16u32, 22, 36, 64] {
+            let rgba = logo_rgba(size);
+            assert_eq!(rgba.len(), (size * size * 4) as usize, "size {size}");
+            let opaque = rgba.chunks(4).filter(|p| p[3] > 200).count();
+            assert!(opaque > 0, "size {size} rendered nothing");
+        }
+    }
 }
