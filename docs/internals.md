@@ -19,8 +19,12 @@ cargo build --release
 services invoke the binary that way, and a service registration outlives the
 release that created it.
 
-Tray menu (macOS/Windows): last-sync status, Sign In… / Sign Out, Sync Now,
-Open Dashboard, Edit Config, Quit. The tray icon is the nine-cell mark from the
+Tray menu (macOS/Windows): last-sync status, who this machine is signed in as,
+one auth row that reads **Sign In…** or **Sign Out** depending on state (never
+both), Sync Now, Open Dashboard, Edit Config, Quit. Which action that row
+performs is decided from the config when it is clicked, not from its label —
+a `hotusage signin` in a terminal can change the state between the menu's
+ten-second refresh and the click. The tray icon is the nine-cell mark from the
 website, drawn at runtime from the same geometry as the site's `icon.svg`.
 
 ## What it parses
