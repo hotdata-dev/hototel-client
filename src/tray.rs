@@ -27,6 +27,47 @@ enum UserEvent {
     SignOutDone(String, bool),
     /// (status line, signed-in address if it succeeded)
     SignInDone(String, Option<String>),
+    /// a release newer than this build exists; carries its tag
+    UpdateAvailable(String),
+}
+
+/// How long after launch the first version check runs. Non-zero so the check
+/// never sits between the user and a menu bar icon at login.
+const UPDATE_FIRST_DELAY: Duration = Duration::from_secs(10);
+
+/// And how often after that. The check is unauthenticated, and GitHub allows
+/// 60 requests an hour per address -- a whole office behind one NAT shares
+/// that budget, so this has to stay far enough below it that the machines
+/// never collectively exhaust it and start being told nothing.
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Where the update row goes: index 4, directly above Sync Now.
+///
+/// Deliberate, not incidental. It belongs with the things you can actually do
+/// rather than under the identity rows, and it must not sit next to Sign Out
+/// or Quit -- a row that appears without warning, under the cursor, adjacent
+/// to something that throws state away is how people lose a session by muscle
+/// memory.
+const UPDATE_ITEM_POSITION: usize = 4;
+
+/// The releases page, for the platform that has no scripted install.
+#[cfg(not(unix))]
+const RELEASES_URL: &str = "https://github.com/hotdata-dev/hotusage-client/releases/latest";
+
+/// What the update row says. It names the version rather than saying "an
+/// update is available", so the click is a decision about a known thing.
+///
+/// The wording differs by platform because the action does: on Unix the row
+/// performs the upgrade, on Windows it can only open the download page, and a
+/// row labelled "Update to 0.8.0" that merely opens a browser would be a
+/// promise the menu does not keep.
+#[cfg(unix)]
+fn update_label(tag: &str) -> String {
+    format!("Update to {}", tag.trim().trim_start_matches('v'))
+}
+#[cfg(not(unix))]
+fn update_label(tag: &str) -> String {
+    format!("Update available: {}", tag.trim().trim_start_matches('v'))
 }
 
 fn open_url(url: &str) {
@@ -39,6 +80,76 @@ fn open_config() {
     let _ = crate::service::safe_command("open").arg("-t").arg(&path).spawn();
     #[cfg(target_os = "windows")]
     let _ = crate::service::safe_command("notepad").arg(&path).spawn();
+}
+
+/// Start `hotusage update` as a process this one does not own.
+///
+/// The upgrade ends by re-registering the login service: on macOS `launchctl
+/// unload` then `load`, on Linux a systemd user unit restart. Either one kills
+/// the tray -- which is the process that started the updater. A child inherits
+/// its parent's session and process group, so launchd tears the updater down
+/// with the job it belongs to, and it dies somewhere inside install.sh. The
+/// window where that is fatal is real: the LaunchAgent has already been
+/// unloaded and the new binary may not yet be in place, so nothing reloads it
+/// and the app simply never comes back. The user's only recovery is a reboot
+/// or a terminal.
+///
+/// setsid(2) is what prevents that. Called between fork and exec, it makes the
+/// child a session leader with a new process group of its own, owned by no
+/// terminal and belonging to no job the service manager is about to stop. The
+/// updater then outlives the tray it was launched from and completes the
+/// install, and the freshly loaded service starts the new build.
+///
+/// This is load-bearing. A plain `Command::spawn`, or dropping the unsafe
+/// block "because nothing uses the session", reintroduces exactly the failure
+/// above -- and it only shows up on a machine that actually updates.
+#[cfg(unix)]
+fn spawn_detached_update() -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    // the running binary by path, never a PATH lookup: `hotusage` on PATH may
+    // be a different install, or absent entirely for a tray started by launchd
+    let exe = std::env::current_exe().map_err(|e| format!("cannot find own path: {e}"))?;
+
+    // The updater has no terminal and no parent left to read it. Pointing it
+    // at a file is both halves of a problem: it cannot be killed by writing to
+    // a pipe whose reader has gone, and an upgrade that failed leaves
+    // something to read afterwards -- which matters most in the case where the
+    // app did not come back and there is nothing else to look at.
+    let log = crate::sync::ensure_config_dir()
+        .map(|d| d.join("update.log"))
+        .and_then(std::fs::File::create);
+    let (out, err) = match log {
+        Ok(f) => match f.try_clone() {
+            Ok(g) => (Stdio::from(f), Stdio::from(g)),
+            Err(_) => (Stdio::null(), Stdio::null()),
+        },
+        // no log is a worse outcome than no update, so carry on without one
+        Err(_) => (Stdio::null(), Stdio::null()),
+    };
+
+    let mut cmd = Command::new(exe);
+    cmd.arg("update").stdin(Stdio::null()).stdout(out).stderr(err);
+    // SAFETY: pre_exec runs in the forked child between fork and exec, where
+    // only async-signal-safe calls are permitted. setsid(2) is one, and it is
+    // the only thing done here -- no allocation, no locks, no Rust runtime.
+    // See the comment above for why detaching is required rather than tidy.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                // Refuse to exec rather than run attached: an updater in this
+                // process's session is the bug this function exists to avoid,
+                // and failing visibly leaves the old build installed and
+                // working.
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not start the updater: {e}"))
 }
 
 /// The nine-cell mark from the website, drawn at runtime.
@@ -166,6 +277,23 @@ pub fn run() -> ! {
         let _ = timer_proxy.send_event(UserEvent::SyncRequested);
     });
 
+    // version check: silent on every failure. An offline laptop, a rate-limited
+    // address and a GitHub outage all have to leave the menu exactly as it is
+    // today -- there is no useful action behind "could not check", and a tray
+    // that reports its own background errors trains people to ignore it.
+    let update_proxy = event_loop.create_proxy();
+    thread::spawn(move || {
+        thread::sleep(UPDATE_FIRST_DELAY);
+        loop {
+            if let Ok(tag) = crate::update::latest_release() {
+                if crate::update::is_newer(crate::update::CURRENT, &tag) {
+                    let _ = update_proxy.send_event(UserEvent::UpdateAvailable(tag));
+                }
+            }
+            thread::sleep(UPDATE_CHECK_INTERVAL);
+        }
+    });
+
     let sync_proxy = event_loop.create_proxy();
     let syncing = Arc::new(AtomicBool::new(false));
 
@@ -179,6 +307,13 @@ pub fn run() -> ! {
     let mut sync_id = None;
     let mut dash_id = None;
     let mut cfg_id = None;
+    // The update row is created only when a newer release exists, so both of
+    // these stay None on a current machine -- and `update_item` being set is
+    // what makes a second UpdateAvailable (six hours later, or a retry) a
+    // no-op instead of a duplicate row.
+    let mut menu_handle: Option<Menu> = None;
+    let mut update_id: Option<tray_icon::menu::MenuId> = None;
+    let mut update_item: Option<MenuItem> = None;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -218,6 +353,9 @@ pub fn run() -> ! {
                 cfg_id = Some(edit_cfg.id().clone());
                 status_item = Some(status);
                 user_item = Some(user);
+                // kept so the update row can be inserted later; Menu is a
+                // handle to the same native menu, not a copy of it
+                menu_handle = Some(menu.clone());
                 let builder = TrayIconBuilder::new().with_menu(Box::new(menu));
                 // NOT a template image: macOS renders template icons as a
                 // monochrome mask, which would throw the colour away. The mark
@@ -247,6 +385,55 @@ pub fn run() -> ! {
                     open_url(&sync::load_config().server_url);
                 } else if Some(e.id()) == cfg_id.as_ref() {
                     open_config();
+                } else if Some(e.id()) == update_id.as_ref() {
+                    #[cfg(unix)]
+                    {
+                        match spawn_detached_update() {
+                            Ok(()) => {
+                                if let Some(item) = &status_item {
+                                    item.set_text("Updating - the app will restart");
+                                }
+                                // Take the row away rather than grey it: the
+                                // upgrade is already running detached, a second
+                                // click would start a second installer racing
+                                // the first over the same binary, and this
+                                // process is about to be killed by its own
+                                // success anyway.
+                                if let (Some(menu), Some(item)) = (&menu_handle, &update_item) {
+                                    let _ = menu.remove(item);
+                                }
+                                update_id = None;
+                                update_item = None;
+                            }
+                            // the old build is untouched and still working, so
+                            // say so and leave the row for another try
+                            Err(msg) => {
+                                if let Some(item) = &status_item {
+                                    item.set_text(format!("Update failed: {msg}"));
+                                }
+                            }
+                        }
+                    }
+                    // Windows has no scripted install -- `hotusage update`
+                    // refuses there -- so the only honest action is the page
+                    // the archive is on. The row stays: nothing happened to
+                    // this machine, and a second click just reopens the tab.
+                    #[cfg(not(unix))]
+                    open_url(RELEASES_URL);
+                }
+            }
+            Event::UserEvent(UserEvent::UpdateAvailable(tag)) => {
+                // The row exists only while this build is behind. A permanent
+                // greyed "Up to date" is the pattern the auth row was just
+                // rewritten to get rid of: a disabled item still reads as an
+                // option that ought to work and is refusing.
+                if update_item.is_none() {
+                    let item = MenuItem::new(update_label(&tag), true, None);
+                    if let Some(menu) = &menu_handle {
+                        let _ = menu.insert(&item, UPDATE_ITEM_POSITION);
+                        update_id = Some(item.id().clone());
+                        update_item = Some(item);
+                    }
                 }
             }
             Event::UserEvent(UserEvent::SyncRequested) => {
@@ -389,6 +576,44 @@ mod tests {
         // work out which applied
         assert_eq!(auth_label(true), "Sign Out");
         assert_eq!(auth_label(false), "Sign In...");
+    }
+
+    #[test]
+    fn the_update_row_names_the_version_it_would_install() {
+        // "an update is available" makes the click a leap; the version makes it
+        // a decision, and it is the same string the upgrade will fetch
+        assert_eq!(update_label("v0.8.0"), update_label("0.8.0"));
+        assert!(update_label("v0.8.0").ends_with("0.8.0"), "must name the tag");
+        // the tag's leading v is git's, not the menu's. Checked at the end of
+        // the label rather than across the whole of it: the Windows wording is
+        // "Update available: 0.8.0", where a bare contains('v') fails on the
+        // word "available" and says nothing about the version at all.
+        assert!(!update_label("v0.8.0").ends_with("v0.8.0"), "the tag's v is not UI");
+        assert_eq!(update_label(" v1.10.2 "), update_label("1.10.2"));
+    }
+
+    #[test]
+    fn the_version_check_stays_well_inside_githubs_budget() {
+        // unauthenticated GitHub allows 60 requests an hour per address, and a
+        // whole office behind one NAT shares it; four checks a day per machine
+        // leaves that budget for the humans using it
+        assert!(UPDATE_CHECK_INTERVAL >= Duration::from_secs(60 * 60), "too eager");
+        assert!(UPDATE_CHECK_INTERVAL <= Duration::from_secs(24 * 60 * 60), "too rare");
+        // and the first check must not be part of launch
+        assert!(UPDATE_FIRST_DELAY > Duration::from_secs(0), "checks during launch");
+        assert!(UPDATE_FIRST_DELAY < UPDATE_CHECK_INTERVAL, "first check too late");
+    }
+
+    #[test]
+    fn the_update_row_sits_above_sync_now_and_not_beside_sign_out() {
+        // the Init menu, in order; the row is inserted into this list
+        let rows = ["status", "user", "---", "auth", "Sync Now"];
+        assert_eq!(rows[UPDATE_ITEM_POSITION], "Sync Now", "not above Sync Now");
+        // a row that appears unannounced, under the cursor, must not land on
+        // top of something that throws state away -- Quit and the auth row's
+        // Sign Out are both below it, never displaced by it
+        assert_eq!(rows[UPDATE_ITEM_POSITION - 1], "auth", "would push auth down");
+        assert!(UPDATE_ITEM_POSITION < rows.len(), "falls off the actionable group");
     }
 
     #[test]

@@ -27,6 +27,16 @@ a `hotusage signin` in a terminal can change the state between the menu's
 ten-second refresh and the click. The tray icon is the nine-cell mark from the
 website, drawn at runtime from the same geometry as the site's `icon.svg`.
 
+An **Update to x.y.z** row appears above Sync Now, and only while this build is
+behind the latest release — a background thread checks GitHub ten seconds after
+launch and every six hours after that, silently on any failure, so an offline
+machine's menu is the one described above. Clicking it starts `hotusage update`
+in a new session via `setsid(2)`, logging to `~/.hotusage/update.log`: the
+update re-registers the login service, which kills the tray, and an updater
+still attached to that job would be killed with it — possibly after the
+LaunchAgent had been unloaded and before the new binary was in place. Windows
+has no scripted install, so there the row opens the releases page instead.
+
 ## What it parses
 
 | Provider | Source | Notes |
@@ -108,7 +118,9 @@ failed download through `curl … | sh` would look like a successful update that
 installed nothing.
 
 `--check` exits `10` when stale, `0` when current, `1` when the check failed —
-so a fleet script can act on it.
+so a fleet script can act on it. The tray's update row calls the same
+`latest_release` and `is_newer`, so the menu can never offer an upgrade the
+command would then refuse.
 
 ## Configuration
 

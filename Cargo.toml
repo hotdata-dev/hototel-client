@@ -1,6 +1,6 @@
 [package]
 name = "hotusage"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 
 [dependencies]
@@ -15,6 +15,11 @@ ureq = { version = "3.4.1", features = ["json"] }
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tao = "0.37.0"
 tray-icon = "0.24.2"
+
+# setsid(2), so the tray can launch the updater in its own session: the
+# update re-registers the login service, which kills the tray that started it
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = ["Win32_System_Console", "Win32_Foundation"] }

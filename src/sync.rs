@@ -25,7 +25,10 @@ fn restrict(path: &std::path::Path, mode: u32) {
 #[cfg(not(unix))]
 fn restrict(_path: &std::path::Path, _mode: u32) {}
 
-fn ensure_config_dir() -> std::io::Result<PathBuf> {
+/// ~/.hotusage, created 0700. Public because it is also where the detached
+/// updater's log goes: that file records an upgrade that killed the process
+/// which started it, so it cannot live anywhere the next run would not look.
+pub fn ensure_config_dir() -> std::io::Result<PathBuf> {
     let dir = config_dir();
     fs::create_dir_all(&dir)?;
     restrict(&dir, 0o700);

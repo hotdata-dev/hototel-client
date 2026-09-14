@@ -86,7 +86,10 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
     }
 }
 
-fn latest_release() -> Result<String, String> {
+/// The tag GitHub calls latest. `pub(crate)` because the tray polls it too:
+/// the version check must be the one this command uses, or the menu could
+/// offer an upgrade the command then refuses to perform.
+pub fn latest_release() -> Result<String, String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     // a version check must never hang the command it is gating
     let agent: ureq::Agent = ureq::Agent::config_builder()
