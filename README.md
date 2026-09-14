@@ -95,6 +95,29 @@ invoke the binary that way.
 Tray menu (macOS/Windows): last-sync status, Sign In... / Sign Out (whichever
 applies), Sync Now, Open Dashboard, Edit Config, Quit.
 
+## Staying current
+
+```bash
+hotusage update           # install the latest release, if there is one
+hotusage update --check   # report only; exit 10 when a newer release exists
+```
+
+`update` is a version check plus a delegation: it compares this build against
+the latest GitHub release and, when there is a newer one, runs the same
+installer the one-liner above runs. It is deliberately not a self-updater —
+`install.sh` already unlinks before writing (a running binary cannot be
+overwritten on Linux), verifies the archive against the release's `SHA256SUMS`,
+re-registers the login service and retires the old binary in the right order.
+Reimplementing that inside the process would duplicate the hard parts and could
+drift from them.
+
+The `--check` exit code is the useful half for a fleet: `10` means stale, `0`
+means current, `1` means the check itself failed. Nothing else tells you a
+machine is behind.
+
+One bootstrap caveat: a machine older than the release that introduced `update`
+has no such command, so it needs the `curl | sh` line once.
+
 ## Reading the organization's usage
 
 ```bash
