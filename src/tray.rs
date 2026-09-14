@@ -584,7 +584,11 @@ mod tests {
         // a decision, and it is the same string the upgrade will fetch
         assert_eq!(update_label("v0.8.0"), update_label("0.8.0"));
         assert!(update_label("v0.8.0").ends_with("0.8.0"), "must name the tag");
-        assert!(!update_label("v0.8.0").contains('v'), "the tag's v is not UI");
+        // the tag's leading v is git's, not the menu's. Checked at the end of
+        // the label rather than across the whole of it: the Windows wording is
+        // "Update available: 0.8.0", where a bare contains('v') fails on the
+        // word "available" and says nothing about the version at all.
+        assert!(!update_label("v0.8.0").ends_with("v0.8.0"), "the tag's v is not UI");
         assert_eq!(update_label(" v1.10.2 "), update_label("1.10.2"));
     }
 
