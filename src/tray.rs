@@ -115,6 +115,12 @@ fn logo_rgba(size: u32) -> Vec<u8> {
     rgba
 }
 
+/// What the one auth row says. Signed in, the only thing you can do is leave;
+/// signed out, the only thing you can do is join.
+fn auth_label(signed_in: bool) -> &'static str {
+    if signed_in { "Sign Out" } else { "Sign In..." }
+}
+
 fn logo_icon() -> tray_icon::Icon {
     tray_icon::Icon::from_rgba(logo_rgba(ICON_PX), ICON_PX, ICON_PX).expect("icon")
 }
@@ -158,10 +164,8 @@ pub fn run() -> ! {
     let signing_in = Arc::new(AtomicBool::new(false));
     let mut status_item: Option<MenuItem> = None;
     let mut user_item: Option<MenuItem> = None;
-    let mut signin_id: Option<tray_icon::menu::MenuId> = None;
-    let mut signout_id: Option<tray_icon::menu::MenuId> = None;
-    let mut signin_item: Option<MenuItem> = None;
-    let mut signout_item: Option<MenuItem> = None;
+    let mut auth_id: Option<tray_icon::menu::MenuId> = None;
+    let mut auth_item: Option<MenuItem> = None;
     let mut last_signed_in = sync::is_signed_in();
     let mut sync_id = None;
     let mut dash_id = None;
@@ -182,9 +186,11 @@ pub fn run() -> ! {
                     false,
                     None,
                 );
-                // exactly one of these is actionable at a time
-                let sign_in = MenuItem::new("Sign In...", !signed_in, None);
-                let sign_out = MenuItem::new("Sign Out", signed_in, None);
+                // One item, not two greyed against each other: a menu that
+                // always lists Sign In AND Sign Out makes the reader work out
+                // which applies, and a disabled row still reads as an option
+                // that ought to work.
+                let auth = MenuItem::new(auth_label(signed_in), true, None);
                 let sync_now = MenuItem::new("Sync Now", true, None);
                 let dashboard = MenuItem::new("Open Dashboard", true, None);
                 let edit_cfg = MenuItem::new("Edit Config", true, None);
@@ -193,18 +199,15 @@ pub fn run() -> ! {
                     &status,
                     &user,
                     &PredefinedMenuItem::separator(),
-                    &sign_in,
-                    &sign_out,
+                    &auth,
                     &sync_now,
                     &dashboard,
                     &edit_cfg,
                     &PredefinedMenuItem::separator(),
                     &PredefinedMenuItem::quit(Some("Quit hotusage")),
                 ]);
-                signin_id = Some(sign_in.id().clone());
-                signout_id = Some(sign_out.id().clone());
-                signin_item = Some(sign_in);
-                signout_item = Some(sign_out);
+                auth_id = Some(auth.id().clone());
+                auth_item = Some(auth);
                 sync_id = Some(sync_now.id().clone());
                 dash_id = Some(dashboard.id().clone());
                 cfg_id = Some(edit_cfg.id().clone());
@@ -224,10 +227,15 @@ pub fn run() -> ! {
                 let _ = sync_proxy.send_event(UserEvent::SyncRequested);
             }
             Event::UserEvent(UserEvent::Menu(e)) => {
-                if Some(e.id()) == signin_id.as_ref() {
-                    let _ = sync_proxy.send_event(UserEvent::SignInRequested);
-                } else if Some(e.id()) == signout_id.as_ref() {
-                    let _ = sync_proxy.send_event(UserEvent::SignOutRequested);
+                if Some(e.id()) == auth_id.as_ref() {
+                    // decided from the config at click time, not from the
+                    // label: a `hotusage signin` in a terminal can change the
+                    // state between the ten-second refresh and this click
+                    let _ = sync_proxy.send_event(if sync::is_signed_in() {
+                        UserEvent::SignOutRequested
+                    } else {
+                        UserEvent::SignInRequested
+                    });
                 } else if Some(e.id()) == sync_id.as_ref() {
                     let _ = sync_proxy.send_event(UserEvent::SyncRequested);
                 } else if Some(e.id()) == dash_id.as_ref() {
@@ -298,11 +306,8 @@ pub fn run() -> ! {
                             format!("Not signed in on {}", sync::hostname())
                         });
                     }
-                    if let Some(item) = &signin_item {
-                        item.set_enabled(!signed_in);
-                    }
-                    if let Some(item) = &signout_item {
-                        item.set_enabled(signed_in);
+                    if let Some(item) = &auth_item {
+                        item.set_text(auth_label(signed_in));
                     }
                     if signed_in {
                         let _ = sync_proxy.send_event(UserEvent::SyncRequested);
@@ -336,11 +341,8 @@ pub fn run() -> ! {
                 if let Some(item) = &user_item {
                     item.set_text(format!("Not signed in on {}", sync::hostname()));
                 }
-                if let Some(item) = &signin_item {
-                    item.set_enabled(true);
-                }
-                if let Some(item) = &signout_item {
-                    item.set_enabled(false);
+                if let Some(item) = &auth_item {
+                    item.set_text(auth_label(false));
                 }
                 last_signed_in = false;
             }
@@ -352,11 +354,8 @@ pub fn run() -> ! {
                     if let Some(item) = &user_item {
                         item.set_text(format!("{} on {}", email, sync::hostname()));
                     }
-                    if let Some(item) = &signin_item {
-                        item.set_enabled(false);
-                    }
-                    if let Some(item) = &signout_item {
-                        item.set_enabled(true);
+                    if let Some(item) = &auth_item {
+                        item.set_text(auth_label(true));
                     }
                     last_signed_in = true;
                     // a fresh sign-in should show data without waiting a cycle
@@ -381,6 +380,14 @@ mod tests {
     fn pixel(rgba: &[u8], size: u32, x: u32, y: u32) -> (u8, u8, u8, u8) {
         let i = ((y * size + x) * 4) as usize;
         (rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3])
+    }
+
+    #[test]
+    fn the_auth_row_names_the_one_action_available() {
+        // the menu used to carry both, one greyed out, leaving the reader to
+        // work out which applied
+        assert_eq!(auth_label(true), "Sign Out");
+        assert_eq!(auth_label(false), "Sign In...");
     }
 
     #[test]
