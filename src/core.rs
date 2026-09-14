@@ -103,6 +103,16 @@ pub struct Built {
 // ---------------------------------------------------------------------------
 
 /// (input, output). Cache: read 0.1x input, 5m write 1.25x, 1h write 2x.
+/// Known limit: `usage.service_tier` is not read.
+///
+/// Claude Code records it, and a non-standard tier (priority, batch) bills at
+/// different rates -- so a session run on one would be priced wrong here. It is
+/// deliberately not handled: those rates are not published anywhere this code
+/// could cite, and guessing a multiplier would be the same silent-drift bug
+/// that ignoring `speed` was, with no way to notice it. Every message in the
+/// corpus this was written against is `service_tier: "standard"`. If that ever
+/// stops being true, price it from a documented rate or not at all.
+
 /// Fast-mode rates, where they are published.
 ///
 /// Fast mode exists on Claude Opus 5 and Opus 4.8 only. Opus 5 is documented at

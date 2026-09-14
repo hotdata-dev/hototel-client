@@ -407,7 +407,12 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
             }
             "--limit" => {
                 let raw = value(&mut i, "--limit")?;
-                o.limit = raw.parse().map_err(|_| format!("bad --limit value: {raw}"))?;
+                let n: usize = raw.parse().map_err(|_| format!("bad --limit value: {raw}"))?;
+                // 0 means no limit, the usual CLI convention. It previously
+                // rendered a report that contradicted itself three ways: "406
+                // matching sessions", then the empty-table message, then
+                // "showing 0 of 406".
+                o.limit = if n == 0 { usize::MAX } else { n };
             }
             "--user" => o.user = Some(value(&mut i, "--user")?),
             "--project" => o.project = Some(value(&mut i, "--project")?),
@@ -1589,6 +1594,16 @@ mod tests {
         assert_eq!(month_label("2026-09-01", false), "Sep");
         assert_eq!(month_label("2026-09-13", true), "Sep"); // first column always
         assert_eq!(month_label("2026-09-13", false), "");
+    }
+
+    #[test]
+    fn limit_zero_means_no_limit_rather_than_an_empty_report() {
+        // it used to contradict itself three ways in one report: "N matching
+        // sessions", the empty-table message, and "showing 0 of N"
+        let o = parse_opts(&["--limit".into(), "0".into()]).unwrap();
+        assert_eq!(o.limit, usize::MAX);
+        let normal = parse_opts(&["--limit".into(), "5".into()]).unwrap();
+        assert_eq!(normal.limit, 5);
     }
 
     #[test]

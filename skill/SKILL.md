@@ -90,7 +90,9 @@ the first one matters more than anything else in this file:
   them — the spend report at claude.ai/admin-settings/usage can, and Claude
   Code's OpenTelemetry export reports real cost per user.
 - Even as an API-rate estimate it is an approximation, so say "about" when
-  quoting totals.
+  quoting totals. Fast-mode requests are priced at their premium rate;
+  non-standard service tiers (priority, batch) are not modelled at all and
+  would be priced as standard.
 
 What the figures *are* good for is comparison: who, which project, which trend,
 and how much work a session represents. That is the frame to answer in.
