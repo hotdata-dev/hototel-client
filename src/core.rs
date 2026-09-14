@@ -16,6 +16,11 @@ pub struct Msg {
     pub cache_read: i64,
     pub cw5: i64, // 5-minute cache writes (Anthropic)
     pub cw1: i64, // 1-hour cache writes (Anthropic)
+    /// Claude Code's fast mode, which bills at a premium -- double the standard
+    /// rate on the models that offer it. Priced wrong, a fast-mode session
+    /// reads as half what it actually costs, and nothing in the numbers hints
+    /// at why.
+    pub fast: bool,
     pub ctx: Option<i64>,        // context override (Codex); None = in+cr+cw
     pub costs: Option<[f64; 4]>, // precomputed (in, out, cache read, cache write)
 }
@@ -98,6 +103,23 @@ pub struct Built {
 // ---------------------------------------------------------------------------
 
 /// (input, output). Cache: read 0.1x input, 5m write 1.25x, 1h write 2x.
+/// Fast-mode rates, where they are published.
+///
+/// Fast mode exists on Claude Opus 5 and Opus 4.8 only. Opus 5 is documented at
+/// $10/$50 per MTok, double its standard $5/$25; Opus 4.8 shares Opus 5's
+/// standard pricing and its fast rate is assumed to match rather than
+/// documented -- if that assumption is ever contradicted, this is the line to
+/// change. Any other model falls through to standard rates: a model that does
+/// not offer fast mode cannot have been billed for it.
+fn rates_claude_fast(model: &str) -> Option<(f64, f64)> {
+    let m = model.to_lowercase();
+    if m.contains("opus-5") || m.contains("opus-4-8") {
+        Some((10.0, 50.0))
+    } else {
+        None
+    }
+}
+
 pub fn rates_claude(model: &str) -> (f64, f64) {
     let m = model.to_lowercase();
     if m.contains("fable") || m.contains("mythos") {
@@ -152,7 +174,10 @@ fn msg_costs(provider: &str, m: &Msg) -> [f64; 4] {
         return c;
     }
     if provider == "claude" || m.model.to_lowercase().contains("claude") {
-        let (rin, rout) = rates_claude(&m.model);
+        let (rin, rout) = match m.fast.then(|| rates_claude_fast(&m.model)).flatten() {
+            Some(fast) => fast,
+            None => rates_claude(&m.model),
+        };
         [
             m.input as f64 * rin / 1e6,
             m.output as f64 * rout / 1e6,
@@ -297,3 +322,76 @@ pub fn build_session(raw: RawSession) -> Option<Built> {
         daily: daily_rows,
     })
 }
+
+#[cfg(test)]
+mod cost_tests {
+    use super::*;
+
+    fn msg(model: &str, fast: bool) -> Msg {
+        Msg {
+            model: model.into(),
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 1_000_000,
+            cw1: 1_000_000,
+            fast,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fast_mode_bills_at_the_premium_rate() {
+        // Opus 5: $5/$25 standard, $10/$50 fast. Priced as standard, a fast
+        // session reads as half what it cost.
+        let std = msg_costs("claude", &msg("claude-opus-5", false));
+        let fast = msg_costs("claude", &msg("claude-opus-5", true));
+        assert_eq!(std[0], 5.0);
+        assert_eq!(std[1], 25.0);
+        assert_eq!(fast[0], 10.0, "fast input");
+        assert_eq!(fast[1], 50.0, "fast output");
+        // cache read (0.1x) and 1h cache write (2x) scale with the input rate
+        assert!((fast[2] - 1.0).abs() < 1e-9, "{:?}", fast);
+        assert!((fast[3] - 20.0).abs() < 1e-9, "{:?}", fast);
+        assert!(fast.iter().sum::<f64>() > std.iter().sum::<f64>() * 1.99);
+    }
+
+    #[test]
+    fn fast_mode_applies_only_where_it_exists() {
+        // Fast mode is Opus 5 / Opus 4.8 only. A `speed` value on anything else
+        // must not invent a premium that was never billed.
+        assert_eq!(rates_claude_fast("claude-opus-4-8"), Some((10.0, 50.0)));
+        assert_eq!(rates_claude_fast("claude-opus-4-7"), None);
+        assert_eq!(rates_claude_fast("claude-sonnet-5"), None);
+        assert_eq!(rates_claude_fast("claude-fable-5"), None);
+        let sonnet_std = msg_costs("claude", &msg("claude-sonnet-5", false));
+        let sonnet_fast = msg_costs("claude", &msg("claude-sonnet-5", true));
+        assert_eq!(sonnet_std, sonnet_fast, "unsupported model must not change");
+    }
+
+    #[test]
+    fn standard_pricing_is_unchanged_by_the_new_field() {
+        // the whole existing corpus is speed=standard; nothing may shift
+        for model in ["claude-opus-5", "claude-fable-5", "claude-sonnet-5"] {
+            let m = msg(model, false);
+            let (rin, rout) = rates_claude(model);
+            let c = msg_costs("claude", &m);
+            assert_eq!(c[0], rin, "{model} input");
+            assert_eq!(c[1], rout, "{model} output");
+        }
+    }
+
+    #[test]
+    fn cache_writes_keep_their_separate_ttl_rates() {
+        // 1h writes cost 2x input, 5m writes 1.25x -- 91% of real traffic is 1h
+        let mut m = msg("claude-opus-5", false);
+        m.cw1 = 0;
+        m.cw5 = 1_000_000;
+        let five = msg_costs("claude", &m);
+        let mut m2 = msg("claude-opus-5", false);
+        m2.cw5 = 0;
+        let hour = msg_costs("claude", &m2);
+        assert!((five[3] - 6.25).abs() < 1e-9, "{:?}", five);
+        assert!((hour[3] - 10.0).abs() < 1e-9, "{:?}", hour);
+    }
+}
+
