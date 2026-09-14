@@ -109,6 +109,9 @@ fn parse_claude_file(path: &Path) -> Option<RawSession> {
                     cache_read: ji64(u, "cache_read_input_tokens"),
                     cw5,
                     cw1,
+                    // absent on transcripts written before fast mode existed,
+                    // which is the same thing as standard
+                    fast: jstr(u, "speed").as_deref() == Some("fast"),
                     ..Default::default()
                 },
             );

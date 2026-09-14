@@ -240,6 +240,17 @@ fn num(n: i64) -> String {
 /// Money the way the dashboard writes it (app.js fmtMoney): cents below a
 /// thousand, grouped whole dollars above it, and a floor marker rather than
 /// "$0.00" for a real-but-tiny amount.
+/// Appended to every report that shows money.
+///
+/// These are API list-price equivalents computed from token counts, not a bill.
+/// On a subscription (Max/Team/Enterprise) the real cost is a flat per-seat fee
+/// and bears no relation to this number -- an org can easily show tens of
+/// thousands here while paying a few hundred. Reported as "cost" with no
+/// qualifier, it gets read as spend and escalated.
+const PRICE_NOTE: &str = "\n\n  Amounts are API list-price equivalents derived from token counts, not a \
+bill.\n  Subscription plans (Max/Team/Enterprise) charge a flat per-seat fee instead; \
+see\n  the spend report at claude.ai/admin-settings/usage for actual cost.";
+
 fn money(n: f64) -> String {
     if n > 0.0 && n < 0.005 {
         return "<$0.01".to_string();
@@ -342,8 +353,8 @@ pub struct Opts {
     pub project: Option<String>,
     pub provider: Option<String>,
     pub id: Option<String>,
-    /// `chart` only: plot estimated cost (the default, and what people ask
-    /// about) or raw token counts.
+    /// `chart` only: plot the list-price equivalent (the default, and what
+    /// people ask about) or raw token counts.
     pub cost_metric: bool,
     pub height: usize,
 }
@@ -576,6 +587,7 @@ pub fn summary(o: &Opts) -> Result<String, String> {
                 .collect::<Vec<_>>(),
         ));
     }
+    out.push_str(PRICE_NOTE);
     Ok(out)
 }
 
@@ -610,7 +622,7 @@ pub fn users(o: &Opts) -> Result<String, String> {
                 ])
                 .collect::<Vec<_>>(),
         )
-    ))
+    ) + PRICE_NOTE)
 }
 
 pub fn projects(o: &Opts) -> Result<String, String> {
@@ -640,7 +652,7 @@ pub fn projects(o: &Opts) -> Result<String, String> {
                 ])
                 .collect::<Vec<_>>(),
         )
-    ))
+    ) + PRICE_NOTE)
 }
 
 pub fn providers(o: &Opts) -> Result<String, String> {
@@ -671,7 +683,7 @@ pub fn providers(o: &Opts) -> Result<String, String> {
                 ])
                 .collect::<Vec<_>>(),
         )
-    ))
+    ) + PRICE_NOTE)
 }
 
 pub fn models(o: &Opts) -> Result<String, String> {
@@ -755,6 +767,7 @@ pub fn daily(o: &Opts) -> Result<String, String> {
             days.len()
         ));
     }
+    out.push_str(PRICE_NOTE);
     Ok(out)
 }
 
@@ -816,6 +829,7 @@ pub fn sessions(o: &Opts) -> Result<String, String> {
         ));
     }
     out.push_str(&unknown_provider_note(unknown_provider));
+    out.push_str(PRICE_NOTE);
     Ok(out)
 }
 
@@ -1149,12 +1163,15 @@ pub fn chart(o: &Opts) -> Result<String, String> {
         .unwrap_or_default();
     out.push_str(&format!(
         "\n  {} per day — total {}, peak {} on {}",
-        if o.cost_metric { "est. cost" } else { "tokens" },
+        if o.cost_metric { "list-price equivalent" } else { "tokens" },
         unit(total),
         unit(top),
         peak
     ));
     out.push_str(&unknown_provider_note(unknown_provider(o)));
+    if o.cost_metric {
+        out.push_str(PRICE_NOTE);
+    }
     Ok(out)
 }
 

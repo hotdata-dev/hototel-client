@@ -43,7 +43,7 @@ Every reporting command takes `--days 7|30|90` (default 30) or `--days all`, and
 | `{{BIN}} providers` | Per-tool: `claude` (Claude Code) vs `codex` vs `opencode`. |
 | `{{BIN}} models` | Which models sessions touched, and how many people used each. |
 | `{{BIN}} daily` | Day-by-day tokens and cost — the series to read trends from. |
-| `{{BIN}} chart` | The same day-by-day series as a stacked ASCII bar chart. `--metric cost\|tokens`, `--height N`, and the `sessions` filters. |
+| `{{BIN}} chart` | The same day-by-day series as a stacked ASCII bar chart. `--metric cost\|tokens` (cost = list-price equivalent), `--height N`, and the `sessions` filters. |
 | `{{BIN}} sessions` | Individual sessions. `--user` `--project` `--provider` (substring match; provider is `claude`/`codex`/`opencode`), `--limit N` |
 | `{{BIN}} session <id>` | One session request-by-request: context growth and output per turn. |
 | `{{BIN}} raw` | The entire payload as JSON. |
@@ -77,10 +77,23 @@ and ended inside it makes the two disagree at the edges. Neither is wrong —
 quote one or the other for a given answer, and don't present them side by side
 as if they should match.
 
-**Cost is an estimate**, computed from published per-model rates when the
-session was parsed. It is a good relative signal (who, what, which trend) and an
-approximation of a real bill. Say "about" when quoting totals; these are not
-invoice figures.
+**The dollar figures are API list-price equivalents, not a bill.** They are
+computed from token counts at published per-model rates. Two consequences, and
+the first one matters more than anything else in this file:
+
+- **On a subscription plan (Max, Team, Enterprise) nobody is charged this.**
+  Those plans bill a flat per-seat fee, so an organization can show tens of
+  thousands of dollars here while actually paying a few hundred. Never present
+  these numbers as spend, a bill, or a budget overrun. Say "list-price
+  equivalent" the first time you quote one in an answer. If someone asks what
+  they are actually paying, the honest answer is that this data cannot tell
+  them — the spend report at claude.ai/admin-settings/usage can, and Claude
+  Code's OpenTelemetry export reports real cost per user.
+- Even as an API-rate estimate it is an approximation, so say "about" when
+  quoting totals.
+
+What the figures *are* good for is comparison: who, which project, which trend,
+and how much work a session represents. That is the frame to answer in.
 
 **A session can use several models**, and cost is not split among them — so
 `models` counts sessions and people, never dollars per model. Do not compute
