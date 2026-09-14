@@ -91,6 +91,7 @@ fn run_once() -> ! {
 fn run_dump() -> ! {
     // parity/debug: print every built session as JSON (ignores sync state)
     let built: Vec<core::Built> = parsers::scan_all()
+        .sessions
         .into_iter()
         .filter_map(core::build_session)
         .collect();
@@ -139,10 +140,15 @@ fn run_signin(force: bool) -> ! {
             std::process::exit(1);
         }
     };
+    // Both strings come from the server. The URL is validated before it is
+    // handed to a shell, but the code is only ever printed and was never
+    // checked at all -- and a terminal escape in it can repaint the sign-in
+    // instructions a person is about to follow.
     println!(
         "opening your browser to approve this machine.\nif it does not open, \
          visit:\n  {}\n\ncheck the page shows this code: {}\n\nwaiting for approval...",
-        s.verification_url, s.user_code
+        usage::sanitize(&s.verification_url),
+        usage::sanitize(&s.user_code)
     );
     service::open_browser(&s.verification_url);
     match sync::signin_wait(&server, &s) {
@@ -246,6 +252,13 @@ fn run_usage(cmd: &str, rest: &[String]) -> ! {
             eprintln!("hotusage: '{cmd}' takes no argument (got '{extra}')");
             std::process::exit(2);
         }
+    }
+    // Same reasoning one level up: every command parsed every option, and the
+    // ones it does not honour were dropped on the floor. `daily --user zac`
+    // answered with the whole organization's totals.
+    if let Err(e) = usage::check_options(cmd, &opts) {
+        eprintln!("hotusage: {e}");
+        std::process::exit(2);
     }
     let out = match cmd {
         "summary" => usage::summary(&opts),
@@ -425,5 +438,9 @@ read your organization's usage (needs read access; `signin` grants it):
   hotusage session <id>      one session, request by request
   hotusage raw               the whole payload as JSON
 
-  options: --days 7|30|90|all   --limit N   --fresh
-  chart also: --metric cost|tokens   --height N   --user/--project/--provider";
+  options: --days 7|30|90|all  --fresh       every command
+           --limit N                         users, projects, sessions, session
+           --user --project --provider       sessions, chart
+           --metric cost|tokens  --height N  chart
+
+  An option the named command does not honour is refused, not ignored.";

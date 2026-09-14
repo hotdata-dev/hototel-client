@@ -12,6 +12,11 @@
 //! So this command is a version check plus a delegation. The check is the part
 //! that did not exist before: nothing told anyone their machine was stale, and
 //! a fleet can sit on half a dozen builds without it showing anywhere.
+//!
+//! The installer is fetched at the tag being installed, never from `main`. What
+//! runs here is a shell script executed on every machine that updates, and
+//! tip-of-branch is whatever was pushed a minute ago — including a script that
+//! assumes a release which has not been cut.
 
 #[cfg(unix)]
 use crate::service::safe_command;
@@ -48,8 +53,13 @@ fn private_tempdir() -> Result<std::path::PathBuf, String> {
 }
 
 const REPO: &str = "hotdata-dev/hotusage-client";
-const INSTALLER: &str =
-    "https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/install.sh";
+
+/// The installer as it stood at one tag. Pinned rather than tracking `main`:
+/// see the module comment -- this script is executed, and the tag resolved by
+/// `latest_release` is the release it is being asked to install.
+fn installer_url(tag: &str) -> String {
+    format!("https://raw.githubusercontent.com/{REPO}/{tag}/install.sh")
+}
 
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
@@ -112,7 +122,7 @@ fn latest_release() -> Result<String, String> {
 /// Hand off to the installer. Unix only: install.sh refuses anything else, and
 /// Windows releases are a zip with no scripted install path.
 #[cfg(unix)]
-fn run_installer() -> Result<(), String> {
+fn run_installer(tag: &str) -> Result<(), String> {
     // Download to a file FIRST, then run the file.
     //
     // `curl ... | sh` reports the exit status of the right-hand side, and a
@@ -127,10 +137,21 @@ fn run_installer() -> Result<(), String> {
     let scrub = || {
         let _ = std::fs::remove_dir_all(&dir);
     };
+    // --proto governs the URL curl is given; --proto-redir governs where a
+    // redirect may send it, and -L follows redirects. Without the second one,
+    // "https only" stops at the first hop.
     let dl = safe_command("curl")
-        .args(["-fsSL", "--proto", "=https", "--tlsv1.2", "-o"])
+        .args([
+            "-fsSL",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--tlsv1.2",
+            "-o",
+        ])
         .arg(&script)
-        .arg(INSTALLER)
+        .arg(installer_url(tag))
         .status()
         .map_err(|e| format!("could not run curl: {e}"))?;
     if !dl.success() {
@@ -168,7 +189,7 @@ fn run_installer() -> Result<(), String> {
 }
 
 #[cfg(not(unix))]
-fn run_installer() -> Result<(), String> {
+fn run_installer(_tag: &str) -> Result<(), String> {
     Err(format!(
         "no scripted install on this platform -- download the latest archive from \
          https://github.com/{REPO}/releases/latest and unzip it over the current \
@@ -210,7 +231,7 @@ pub fn run(check_only: bool, force: bool) -> i32 {
         // non-zero so a script or a fleet check can act on "this box is stale"
         return if newer { 10 } else { 0 };
     }
-    match run_installer() {
+    match run_installer(&latest) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("hotusage: {e}");
@@ -282,6 +303,16 @@ mod tests {
         assert!(!looks_ok("#!/bin/sh\necho hi\n")); // too short to be install.sh
         let real = std::fs::read_to_string("install.sh").expect("install.sh");
         assert!(looks_ok(&real), "the real installer must pass its own guard");
+    }
+
+    #[test]
+    fn the_installer_is_fetched_at_the_release_being_installed() {
+        // it used to fetch main: whatever was pushed to the branch ran on every
+        // machine that updated, not the script the release was cut from
+        let url = installer_url("v0.7.0");
+        assert!(url.ends_with("/v0.7.0/install.sh"), "{url}");
+        assert!(!url.contains("/main/"), "{url}");
+        assert!(url.starts_with("https://raw.githubusercontent.com/"), "{url}");
     }
 
     #[test]

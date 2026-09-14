@@ -6,31 +6,98 @@
 //!               cumulative; deltas keep sums correct; input includes cached)
 //! OpenCode:     ~/.local/share/opencode/opencode.db (sqlite)
 
-use crate::core::{rates_claude, rates_openai, truncate_chars, Msg, RawSession};
+use crate::core::{prices_as_claude, rates_claude, rates_openai, truncate_chars, Msg, RawSession};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
+/// The longest transcript line that will be parsed, in bytes.
+///
+/// A JSONL line is the parse unit, so it has to be held whole -- and one line
+/// is as long as whatever the person pasted into the prompt that produced it.
+/// Streaming the file bounds the file, not the line: `BufRead::split` grows a
+/// single Vec until the newline arrives, so a multi-gigabyte paste is an
+/// out-of-memory kill of a daemon that runs at login. 8 MB is far above any
+/// real message and far below anything that hurts.
+const MAX_LINE: usize = 8 * 1024 * 1024;
+
+/// One line's bytes. `None` at EOF or on an I/O error (which would repeat
+/// forever if the file were retried); `Some(None)` for a line past MAX_LINE,
+/// whose bytes are consumed and discarded without ever being buffered.
+fn read_line_capped(reader: &mut impl BufRead) -> Option<Option<Vec<u8>>> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut over = false;
+    let mut started = false;
+    loop {
+        let (consumed, eol) = {
+            let available = reader.fill_buf().ok()?;
+            if available.is_empty() {
+                // a final line with no trailing newline still counts
+                return started.then(|| (!over).then_some(buf));
+            }
+            started = true;
+            match available.iter().position(|b| *b == b'\n') {
+                Some(i) => {
+                    if !over {
+                        buf.extend_from_slice(&available[..i]);
+                    }
+                    (i + 1, true)
+                }
+                None => {
+                    if !over {
+                        buf.extend_from_slice(available);
+                    }
+                    (available.len(), false)
+                }
+            }
+        };
+        reader.consume(consumed);
+        if eol {
+            return Some((!over).then_some(buf));
+        }
+        if buf.len() > MAX_LINE {
+            // release what was read: staying bounded is the entire point
+            over = true;
+            buf = Vec::new();
+        }
+    }
+}
+
 /// Stream a file line by line. Transcript files run to hundreds of MB, and the
 /// collector re-reads all of them every cycle for the life of the machine, so
-/// they must never be pulled into memory whole. A line of invalid UTF-8 is
-/// skipped on its own; an I/O error ends the file (it would repeat forever).
+/// they must never be pulled into memory whole. A line of invalid UTF-8, or one
+/// past MAX_LINE, is skipped on its own -- losing one message's usage, where
+/// abandoning the file would lose the whole session. An I/O error ends the file.
 fn lines(path: &Path) -> Option<impl Iterator<Item = String>> {
     let file = fs::File::open(path).ok()?;
-    Some(
-        std::io::BufReader::new(file)
-            .split(b'\n')
-            .map_while(Result::ok)
-            .filter_map(|b| {
-                let mut s = String::from_utf8(b).ok()?;
-                if s.ends_with('\r') {
-                    s.pop();
-                }
-                Some(s)
-            }),
-    )
+    let mut reader = std::io::BufReader::new(file);
+    Some(std::iter::from_fn(move || loop {
+        let Some(raw) = read_line_capped(&mut reader)? else {
+            continue;
+        };
+        let Ok(mut s) = String::from_utf8(raw) else {
+            continue;
+        };
+        if s.ends_with('\r') {
+            s.pop();
+        }
+        return Some(s);
+    }))
+}
+
+/// Count a file this process could not open, and pass the failure on.
+///
+/// A file that cannot be read parses to nothing, which is indistinguishable
+/// from a file with no usage in it -- so a permissions problem over the whole
+/// transcript directory reported "up to date (0 sessions)" and looked like a
+/// healthy, idle machine. The count is what lets `sync` say otherwise.
+fn count_unreadable<T>(opened: Option<T>, unreadable: &mut usize) -> Option<T> {
+    if opened.is_none() {
+        *unreadable += 1;
+    }
+    opened
 }
 
 pub fn home_dir() -> PathBuf {
@@ -66,7 +133,7 @@ fn ji64(v: &Value, key: &str) -> i64 {
 // ---------------------------------------------------------------------------
 // Claude Code
 // ---------------------------------------------------------------------------
-fn parse_claude_file(path: &Path) -> Option<RawSession> {
+fn parse_claude_file(path: &Path, unreadable: &mut usize) -> Option<RawSession> {
     let dirname = path
         .parent()
         .and_then(|p| p.file_name())
@@ -80,7 +147,7 @@ fn parse_claude_file(path: &Path) -> Option<RawSession> {
     let mut first_prompt: Option<String> = None;
     let mut cwd_counts: HashMap<String, u32> = HashMap::new();
 
-    for line in lines(path)? {
+    for line in count_unreadable(lines(path), unreadable)? {
         if line.contains("\"assistant\"") {
             let Ok(o) = serde_json::from_str::<Value>(&line) else { continue };
             if o.get("type").and_then(|t| t.as_str()) != Some("assistant") {
@@ -171,7 +238,11 @@ fn codex_usage(v: &Value) -> [i64; 3] {
     ]
 }
 
-fn parse_codex_file(path: &Path, titles: &HashMap<String, String>) -> Option<RawSession> {
+fn parse_codex_file(
+    path: &Path,
+    titles: &HashMap<String, String>,
+    unreadable: &mut usize,
+) -> Option<RawSession> {
     let mut session_id: Option<String> = None;
     let mut cwd: Option<String> = None;
     let mut first_prompt: Option<String> = None;
@@ -179,7 +250,7 @@ fn parse_codex_file(path: &Path, titles: &HashMap<String, String>) -> Option<Raw
     let mut prev: Option<[i64; 3]> = None;
     let mut msgs: Vec<Msg> = Vec::new();
 
-    for line in lines(path)? {
+    for line in count_unreadable(lines(path), unreadable)? {
         if line.contains("\"turn_context\"") {
             let Ok(o) = serde_json::from_str::<Value>(&line) else { continue };
             if o.get("type").and_then(|t| t.as_str()) == Some("turn_context") {
@@ -336,11 +407,14 @@ fn parse_opencode() -> Vec<RawSession> {
                 output: ji64(tk, "output") + ji64(tk, "reasoning"),
                 cache_read: ji64(&cache, "read"),
                 cw5: ji64(&cache, "write"),
+                // opencode routes to a vendor; pricing follows the vendor, not
+                // the fact that opencode is what wrote the row
+                vendor: Some(provider_id.clone()),
                 ..Default::default()
             };
             // our tables know anthropic/openai models; otherwise fall back to
             // opencode's own computed cost, bucketed under output
-            let known = if provider_id.contains("anthropic") || model.to_lowercase().contains("claude") {
+            let known = if prices_as_claude(&provider_id, &model) {
                 rates_claude(&model) != (0.0, 0.0)
             } else {
                 rates_openai(&model) != (0.0, 0.0, 0.0)
@@ -406,17 +480,26 @@ fn jsonl_files_at_depth(root: &Path, depth: usize) -> Vec<PathBuf> {
     files
 }
 
-pub fn scan_all() -> Vec<RawSession> {
+/// Everything this machine's history yielded, plus what it could not read.
+pub struct Scan {
+    pub sessions: Vec<RawSession>,
+    /// Transcript files that could not be opened. Reported rather than
+    /// swallowed: silently, they are the same as no usage at all.
+    pub unreadable: usize,
+}
+
+pub fn scan_all() -> Scan {
     let mut raws: Vec<RawSession> = Vec::new();
+    let mut unreadable = 0usize;
 
     for p in jsonl_files_at_depth(&home(".claude/projects"), 1) {
-        if let Some(r) = parse_claude_file(&p) {
+        if let Some(r) = parse_claude_file(&p, &mut unreadable) {
             raws.push(r);
         }
     }
     let titles = load_codex_titles();
     for p in jsonl_files_at_depth(&home(".codex/sessions"), 3) {
-        if let Some(r) = parse_codex_file(&p, &titles) {
+        if let Some(r) = parse_codex_file(&p, &titles, &mut unreadable) {
             raws.push(r);
         }
     }
@@ -441,5 +524,218 @@ pub fn scan_all() -> Vec<RawSession> {
             }
         }
     }
-    merged.into_values().collect()
+    Scan {
+        sessions: merged.into_values().collect(),
+        unreadable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A transcript file on disk, in a directory of its own so the Claude
+    /// parser's project-name fallback (the parent directory) is predictable.
+    fn fixture(name: &str, lines: &[&str]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hotusage-parse-{}-{name}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("fixture dir");
+        let path = dir.join(format!("{name}.jsonl"));
+        fs::write(&path, format!("{}\n", lines.join("\n"))).expect("fixture file");
+        path
+    }
+
+    fn cleanup(path: &Path) {
+        if let Some(dir) = path.parent() {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    fn claude(path: &Path) -> RawSession {
+        let mut unreadable = 0;
+        let s = parse_claude_file(path, &mut unreadable).expect("a session");
+        assert_eq!(unreadable, 0, "the fixture must be readable");
+        s
+    }
+
+    fn codex(path: &Path) -> RawSession {
+        let mut unreadable = 0;
+        let s =
+            parse_codex_file(path, &HashMap::new(), &mut unreadable).expect("a session");
+        assert_eq!(unreadable, 0, "the fixture must be readable");
+        s
+    }
+
+    #[test]
+    fn claude_counts_one_message_id_once_however_often_it_appears() {
+        // Claude Code writes one transcript line per content block, and every
+        // one of them repeats the SAME usage object. Counted per line, a long
+        // assistant turn multiplies its own tokens by however many blocks it
+        // happened to produce.
+        let line = r#"{"type":"assistant","timestamp":"2026-09-12T10:00:00Z","cwd":"/w/api","message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":3}}}"#;
+        let path = fixture("dedupe", &[line, line, line]);
+        let s = claude(&path);
+        assert_eq!(s.msgs.len(), 1, "one id must count once");
+        assert_eq!(s.msgs[0].input, 10);
+        assert_eq!(s.msgs[0].output, 5);
+        assert_eq!(s.cwd.as_deref(), Some("/w/api"));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn claude_splits_cache_writes_by_ttl_and_falls_back_to_the_old_field() {
+        // The two TTLs bill differently (1.25x and 2x input), so they cannot be
+        // summed into one number. Transcripts predating the split carry only
+        // `cache_creation_input_tokens`, which is the 5-minute product -- and
+        // an object with neither ephemeral key has to take that path too, or
+        // real cache writes vanish.
+        let split = fixture(
+            "ttl",
+            &[r#"{"type":"assistant","timestamp":"2026-09-12T10:00:00Z","message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":700,"ephemeral_1h_input_tokens":900}}}}"#],
+        );
+        let s = claude(&split);
+        assert_eq!((s.msgs[0].cw5, s.msgs[0].cw1), (700, 900));
+        cleanup(&split);
+
+        let legacy = fixture(
+            "legacy-ttl",
+            &[r#"{"type":"assistant","timestamp":"2026-09-12T10:00:00Z","message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":500}}}"#],
+        );
+        let s = claude(&legacy);
+        assert_eq!((s.msgs[0].cw5, s.msgs[0].cw1), (500, 0), "legacy is 5m");
+        cleanup(&legacy);
+
+        let empty_object = fixture(
+            "ttl-empty",
+            &[r#"{"type":"assistant","timestamp":"2026-09-12T10:00:00Z","message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation":{},"cache_creation_input_tokens":400}}}"#],
+        );
+        let s = claude(&empty_object);
+        assert_eq!((s.msgs[0].cw5, s.msgs[0].cw1), (400, 0));
+        cleanup(&empty_object);
+    }
+
+    #[test]
+    fn codex_token_counts_are_cumulative_so_only_the_delta_is_new_usage() {
+        // Codex reports a running total on every event. Summed as if each were
+        // a fresh measurement, a twenty-turn session reports roughly ten times
+        // the tokens it used.
+        let path = fixture(
+            "codex",
+            &[
+                r#"{"type":"session_meta","payload":{"id":"sess-1","cwd":"/w/api"}}"#,
+                r#"{"type":"turn_context","payload":{"model":"gpt-5"}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-09-12T10:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20}}}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-09-12T10:05:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":50},"last_token_usage":{"input_tokens":200,"cached_input_tokens":60,"output_tokens":30}}}}"#,
+            ],
+        );
+        let s = codex(&path);
+        assert_eq!(s.id, "sess-1");
+        assert_eq!(s.cwd.as_deref(), Some("/w/api"));
+        assert_eq!(s.msgs.len(), 2);
+        assert_eq!(s.msgs[0].model, "gpt-5");
+        // first event: the total IS the delta
+        assert_eq!((s.msgs[0].input, s.msgs[0].cache_read, s.msgs[0].output), (60, 40, 20));
+        // second: 300-100 input of which 100-40 cached, 50-20 output
+        assert_eq!((s.msgs[1].input, s.msgs[1].cache_read, s.msgs[1].output), (140, 60, 30));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_codex_counter_reset_falls_back_to_the_last_turn_rather_than_going_negative() {
+        // A resumed rollout can restart the running total. Subtracting then
+        // yields a negative delta, which would either cancel out real usage or
+        // clamp the turn to zero; the event's own last_token_usage is the only
+        // trustworthy number at that point.
+        let path = fixture(
+            "codex-reset",
+            &[
+                r#"{"type":"session_meta","payload":{"id":"sess-2","cwd":"/w/api"}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-09-12T10:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":90},"last_token_usage":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":90}}}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-09-12T10:05:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":5,"output_tokens":2},"last_token_usage":{"input_tokens":7,"cached_input_tokens":3,"output_tokens":1}}}}"#,
+            ],
+        );
+        let s = codex(&path);
+        assert_eq!(s.msgs.len(), 2);
+        assert_eq!((s.msgs[1].input, s.msgs[1].cache_read, s.msgs[1].output), (4, 3, 1));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_session_with_no_recorded_title_is_named_by_its_first_prompt_line() {
+        // This is the fallback the privacy section of SKILL.md has to describe:
+        // with no ai-title, the title IS prompt text -- one line of it, capped.
+        let long = "x".repeat(200);
+        let user = format!(
+            r#"{{"type":"user","message":{{"content":"{long}\nsecond line"}}}}"#
+        );
+        let path = fixture(
+            "title",
+            &[
+                &user,
+                r#"{"type":"assistant","timestamp":"2026-09-12T10:00:00Z","message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1}}}"#,
+            ],
+        );
+        let s = claude(&path);
+        let title = s.title.expect("a title");
+        assert_eq!(title.chars().count(), 80, "capped at 80 chars: {title:?}");
+        assert!(!title.contains("second line"), "only the first line");
+        cleanup(&path);
+
+        // an ai-title, where one exists, wins over the prompt
+        let titled = fixture(
+            "ai-title",
+            &[
+                r#"{"type":"ai-title","aiTitle":"Refactor the ingest endpoint"}"#,
+                r#"{"type":"user","message":{"content":"do the thing"}}"#,
+                r#"{"type":"assistant","timestamp":"2026-09-12T10:00:00Z","message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1}}}"#,
+            ],
+        );
+        assert_eq!(
+            claude(&titled).title.as_deref(),
+            Some("Refactor the ingest endpoint")
+        );
+        cleanup(&titled);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_opened_is_counted_rather_than_read_as_empty() {
+        // the difference between "this machine is idle" and "I could not look"
+        let missing = std::env::temp_dir().join("hotusage-does-not-exist.jsonl");
+        let mut unreadable = 0;
+        assert!(parse_claude_file(&missing, &mut unreadable).is_none());
+        assert_eq!(unreadable, 1);
+        assert!(parse_codex_file(&missing, &HashMap::new(), &mut unreadable).is_none());
+        assert_eq!(unreadable, 2);
+    }
+
+    #[test]
+    fn an_enormous_single_line_is_skipped_instead_of_being_buffered() {
+        // A pasted file makes one JSONL line arbitrarily long, and the line is
+        // the parse unit -- so an unbounded read is an out-of-memory kill of a
+        // daemon that runs at login, triggered by nothing but a big paste.
+        let dir = std::env::temp_dir().join(format!("hotusage-bigline-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.jsonl");
+        fs::write(&path, "x".repeat(9 * 1024 * 1024)).unwrap();
+        assert_eq!(lines(&path).unwrap().count(), 0, "the huge line must be dropped");
+
+        // and a normal file is completely unaffected
+        fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        assert_eq!(
+            lines(&path).unwrap().collect::<Vec<_>>(),
+            vec!["one", "two", "three"]
+        );
+        // including a line that runs past the reader's buffer without a newline
+        fs::write(&path, format!("{}\nshort", "y".repeat(200_000))).unwrap();
+        let got: Vec<String> = lines(&path).unwrap().collect();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].len(), 200_000);
+        assert_eq!(got[1], "short");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

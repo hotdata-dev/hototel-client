@@ -33,7 +33,10 @@ signed in but lack read access (an older install), the command to use is
 ## Commands
 
 Every reporting command takes `--days 7|30|90` (default 30) or `--days all`, and
-`--fresh` to bypass the server's cache.
+`--fresh` to bypass the server's cache. Every other option belongs to the
+commands listed with it below, and passing it to a command that does not honour
+it is an error rather than a silently unfiltered answer — so if a question needs
+filtering, ask it of `sessions` or `chart`.
 
 | Command | Answers |
 |---|---|
@@ -128,10 +131,28 @@ apart from here.
 
 ## Privacy
 
-hotusage uploads **derived usage only** — token counts, costs, timings, project
-and model names. Prompts, code and transcript contents are never sent, so they
-are not here and cannot be retrieved. If the user asks what someone was actually
-working on, the honest answer is the project name and nothing more.
+What hotusage uploads, in full:
+
+- derived numbers — token counts, costs, request and session counts, timings,
+  peak context;
+- model names;
+- the project name **and the session's full working-directory path**;
+- a session title.
+
+**A session title is not always the agent's own summary.** Claude Code and Codex
+record one when they have written one; when they have not, hotusage falls back
+to **the first line of the session's first prompt, truncated to about 80
+characters**. Titles in `sessions` and `session` output are therefore sometimes
+verbatim prompt text.
+
+Nothing else is sent: no message bodies, no code, no file contents, no
+transcript beyond that one title line.
+
+So when asked what someone was working on, you may quote the project, the path
+and the title — but note that a title can be a fragment of their first prompt
+rather than a description. Never say prompts "cannot be retrieved", or that the
+project name is all there is; that is not true of this data, and someone may
+make a disclosure decision on the strength of it.
 
 Usage is per-person and visible to everyone in the organization. When answering
 comparative questions ("who spent the most"), report the numbers plainly, but do

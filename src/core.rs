@@ -23,6 +23,13 @@ pub struct Msg {
     pub fast: bool,
     pub ctx: Option<i64>,        // context override (Codex); None = in+cr+cw
     pub costs: Option<[f64; 4]>, // precomputed (in, out, cache read, cache write)
+    /// Who actually served this request, when that is not the tool that logged
+    /// it. OpenCode is a router: the session's provider id is `opencode`, but
+    /// every message records the vendor it was sent to (`anthropic`, `openai`,
+    /// ...), and pricing has to follow the vendor. Without it the tool id was
+    /// all `msg_costs` could see, so an Anthropic model run through OpenCode
+    /// was looked up in the OpenAI table and priced at exactly zero.
+    pub vendor: Option<String>,
 }
 
 /// The provider ids the parsers emit, and the exact strings that reach the
@@ -102,17 +109,6 @@ pub struct Built {
 // Pricing (USD per MTok, provider list prices as of Sep 2026). Estimates only.
 // ---------------------------------------------------------------------------
 
-/// (input, output). Cache: read 0.1x input, 5m write 1.25x, 1h write 2x.
-/// Known limit: `usage.service_tier` is not read.
-///
-/// Claude Code records it, and a non-standard tier (priority, batch) bills at
-/// different rates -- so a session run on one would be priced wrong here. It is
-/// deliberately not handled: those rates are not published anywhere this code
-/// could cite, and guessing a multiplier would be the same silent-drift bug
-/// that ignoring `speed` was, with no way to notice it. Every message in the
-/// corpus this was written against is `service_tier: "standard"`. If that ever
-/// stops being true, price it from a documented rate or not at all.
-
 /// Fast-mode rates, where they are published.
 ///
 /// Fast mode exists on Claude Opus 5 and Opus 4.8 only. Opus 5 is documented at
@@ -130,6 +126,16 @@ fn rates_claude_fast(model: &str) -> Option<(f64, f64)> {
     }
 }
 
+/// (input, output). Cache: read 0.1x input, 5m write 1.25x, 1h write 2x.
+/// Known limit: `usage.service_tier` is not read.
+///
+/// Claude Code records it, and a non-standard tier (priority, batch) bills at
+/// different rates -- so a session run on one would be priced wrong here. It is
+/// deliberately not handled: those rates are not published anywhere this code
+/// could cite, and guessing a multiplier would be the same silent-drift bug
+/// that ignoring `speed` was, with no way to notice it. Every message in the
+/// corpus this was written against is `service_tier: "standard"`. If that ever
+/// stops being true, price it from a documented rate or not at all.
 pub fn rates_claude(model: &str) -> (f64, f64) {
     let m = model.to_lowercase();
     if m.contains("fable") || m.contains("mythos") {
@@ -178,12 +184,28 @@ pub fn rates_openai(model: &str) -> (f64, f64, f64) {
     (0.0, 0.0, 0.0)
 }
 
+/// Does this (provider, model) pair belong on the Anthropic rate table?
+///
+/// One predicate, two callers: pricing here and the parsers' decision about
+/// whether a model is one we can price at all. They were written separately and
+/// drifted -- the parser accepted an OpenCode session whose `providerID` was
+/// "anthropic" as known, threw away OpenCode's own computed cost for it, and
+/// then priced it through the OpenAI table, which returns zero for every
+/// Anthropic model name. Real tokens, $0.00, no error anywhere. Any future
+/// vendor spelling has to be added here and takes both sites with it.
+pub fn prices_as_claude(provider: &str, model: &str) -> bool {
+    let p = provider.to_lowercase();
+    p == CLAUDE || p.contains("anthropic") || model.to_lowercase().contains("claude")
+}
+
 /// Cost split by token type: (input, output, cache read, cache write).
 fn msg_costs(provider: &str, m: &Msg) -> [f64; 4] {
     if let Some(c) = m.costs {
         return c;
     }
-    if provider == "claude" || m.model.to_lowercase().contains("claude") {
+    // the vendor that served the request outranks the tool that logged it
+    let provider = m.vendor.as_deref().unwrap_or(provider);
+    if prices_as_claude(provider, &m.model) {
         let (rin, rout) = match m.fast.then(|| rates_claude_fast(&m.model)).flatten() {
             Some(fast) => fast,
             None => rates_claude(&m.model),
@@ -388,6 +410,49 @@ mod cost_tests {
             assert_eq!(c[0], rin, "{model} input");
             assert_eq!(c[1], rout, "{model} output");
         }
+    }
+
+    #[test]
+    fn an_anthropic_model_routed_through_opencode_is_not_priced_at_zero() {
+        // The verified bug: OpenCode logs provider "opencode" for the session
+        // and "anthropic" for the message. The parser called the model known
+        // (so OpenCode's own cost was discarded) and pricing then looked
+        // "opus-4-5" up in the OpenAI table, which knows no Anthropic name --
+        // three million real tokens reported as $0.00, with nothing to notice.
+        let m = Msg {
+            model: "opus-4-5".into(),
+            vendor: Some("anthropic".into()),
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 1_000_000,
+            ..Default::default()
+        };
+        let c = msg_costs(OPENCODE, &m);
+        assert!(c.iter().sum::<f64>() > 0.0, "priced to nothing: {c:?}");
+        assert_eq!(c[0], 5.0, "opus input rate");
+        assert_eq!(c[1], 25.0, "opus output rate");
+    }
+
+    #[test]
+    fn the_pricing_predicate_covers_every_spelling_both_sites_see() {
+        // the parser matched on providerID and pricing matched on the session
+        // provider; one predicate now answers for both
+        assert!(prices_as_claude(CLAUDE, "opus-4-5"));
+        assert!(prices_as_claude("anthropic", "opus-4-5"));
+        assert!(prices_as_claude("Anthropic", "opus-4-5"));
+        assert!(prices_as_claude(OPENCODE, "claude-sonnet-5"));
+        assert!(!prices_as_claude(OPENCODE, "gpt-5"));
+        assert!(!prices_as_claude(CODEX, "gpt-5"));
+    }
+
+    #[test]
+    fn a_message_with_no_vendor_still_prices_by_its_tool() {
+        // the Claude Code and Codex parsers set no vendor, so the session's own
+        // provider has to keep deciding for them
+        let claude = msg_costs(CLAUDE, &msg("claude-opus-5", false));
+        assert_eq!(claude[0], 5.0);
+        let codex = msg_costs(CODEX, &msg("gpt-5", false));
+        assert_eq!(codex[0], 1.25, "gpt-5 input rate");
     }
 
     #[test]

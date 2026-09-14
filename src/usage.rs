@@ -285,10 +285,33 @@ enum Align {
     R,
 }
 
+/// Strip control characters from anything the server supplied.
+///
+/// Project names come from directory basenames and session titles from prompts,
+/// both written by whoever is being reported on; a hostile or compromised
+/// server can put anything at all in either. These strings are printed to a
+/// terminal and read into a coding agent's context, where an ANSI escape can
+/// clear the screen, repaint earlier output, or fake the end of this program's
+/// report. Nothing below 0x20 and no DEL survives: a real name contains none of
+/// them, and a name missing a byte beats a report that lies about its shape.
+pub fn sanitize(s: &str) -> String {
+    s.chars()
+        .filter(|c| *c >= '\u{20}' && *c != '\u{7f}')
+        .collect()
+}
+
 fn table(headers: &[(&str, Align)], rows: &[Vec<String>]) -> String {
     if rows.is_empty() {
         return "  (nothing in this window)".into();
     }
+    // The one chokepoint every rendered cell passes through. Sanitized before
+    // the widths are measured, because a column has to be sized on what is
+    // actually printed or the whole table drifts by the stripped bytes.
+    let rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| r.iter().map(|c| sanitize(c)).collect())
+        .collect();
+    let rows = &rows[..];
     let mut widths: Vec<usize> = headers.iter().map(|(h, _)| h.chars().count()).collect();
     for r in rows {
         for (i, c) in r.iter().enumerate() {
@@ -357,6 +380,14 @@ pub struct Opts {
     /// people ask about) or raw token counts.
     pub cost_metric: bool,
     pub height: usize,
+    /// The option flags that appeared on this command line, in order.
+    ///
+    /// A default is indistinguishable from a value the user typed, and most of
+    /// these options are honoured by two commands out of ten -- so `daily
+    /// --user zac` parsed cleanly and answered with the whole organization's
+    /// totals under a heading that named nobody. Knowing what was actually
+    /// asked for is what lets the command refuse instead.
+    pub given: Vec<String>,
 }
 
 impl Default for Opts {
@@ -372,8 +403,52 @@ impl Default for Opts {
             id: None,
             cost_metric: true,
             height: 18,
+            given: Vec::new(),
         }
     }
+}
+
+/// Which commands honour each option. Everything not listed here is accepted
+/// everywhere (`--days`, `--fresh`).
+const APPLIES_TO: [(&str, &str); 5] = [
+    ("--user", "sessions and chart"),
+    ("--project", "sessions and chart"),
+    ("--provider", "sessions and chart"),
+    ("--metric", "chart"),
+    ("--height", "chart"),
+];
+
+fn honoured_by(cmd: &str, flag: &str) -> bool {
+    match flag {
+        "--user" | "--project" | "--provider" => matches!(cmd, "sessions" | "chart"),
+        "--metric" | "--height" => cmd == "chart",
+        "--limit" => matches!(cmd, "users" | "projects" | "sessions" | "session"),
+        _ => true, // --days and --fresh reach the fetch, so every command uses them
+    }
+}
+
+/// Refuse an option the named command would ignore.
+///
+/// Silently ignoring one is the worst failure this tool has: `daily --user zac`
+/// returned the whole organization's day-by-day totals, which reads as one
+/// person's usage and is wrong by however many colleagues there are. An agent
+/// relaying that has no way to tell. Same shape as the stray-positional check
+/// in `run_usage`, and the same exit code.
+pub fn check_options(cmd: &str, o: &Opts) -> Result<(), String> {
+    for flag in &o.given {
+        if honoured_by(cmd, flag) {
+            continue;
+        }
+        let applies = APPLIES_TO
+            .iter()
+            .find(|(f, _)| f == flag)
+            .map(|(_, who)| *who)
+            .unwrap_or("users, projects, sessions and session");
+        return Err(format!(
+            "'{cmd}' does not take {flag} (it applies to {applies})"
+        ));
+    }
+    Ok(())
 }
 
 /// `--days 14` means "at least 14 days"; the server only stores the three
@@ -393,6 +468,9 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
                 .cloned()
                 .ok_or_else(|| format!("{name} needs a value"))
         };
+        if a.starts_with("--") {
+            o.given.push(a.to_string());
+        }
         match a {
             "--days" => {
                 let raw = value(&mut i, "--days")?;
@@ -446,8 +524,12 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
 // ---------------------------------------------------------------------------
 // fetch
 // ---------------------------------------------------------------------------
-fn fetch(o: &Opts) -> Result<Payload, String> {
-    let cfg = load_config();
+/// The data request these options describe. Shared by `fetch` and `raw`, which
+/// built it separately: `raw` is the command people reach for to check what the
+/// others are working from, so the two answering different questions -- a
+/// forgotten `&fresh=1`, a different window -- would be invisible and
+/// thoroughly misleading.
+fn data_path(o: &Opts) -> String {
     let mut path = match o.days {
         Some(d) => format!("/api/data?days={d}"),
         None => "/api/data?days=all".to_string(),
@@ -455,7 +537,12 @@ fn fetch(o: &Opts) -> Result<Payload, String> {
     if o.fresh {
         path.push_str("&fresh=1");
     }
-    Payload::from_value(api_get(&cfg, &path, 180)?)
+    path
+}
+
+fn fetch(o: &Opts) -> Result<Payload, String> {
+    let cfg = load_config();
+    Payload::from_value(api_get(&cfg, &data_path(o), 180)?)
 }
 
 fn header(p: &Payload, o: &Opts) -> String {
@@ -472,10 +559,11 @@ fn header(p: &Payload, o: &Opts) -> String {
         }
         _ => String::new(),
     };
+    // the org name is server-supplied and lands in a terminal, like every cell
     let org = if p.viewer.org.is_empty() {
-        "your organization"
+        "your organization".to_string()
     } else {
-        &p.viewer.org
+        sanitize(&p.viewer.org)
     };
     format!(
         "{org} — {span}{note}\nas of {}, {} sessions",
@@ -776,20 +864,27 @@ pub fn daily(o: &Opts) -> Result<String, String> {
     Ok(out)
 }
 
-pub fn sessions(o: &Opts) -> Result<String, String> {
-    let p = fetch(o)?;
+/// Does this session pass `--user` / `--project` / `--provider`?
+///
+/// `sessions` and `chart` filter the same data and are read together -- a chart
+/// that kept a session the table dropped would look like a rendering quirk
+/// rather than a different answer, so both ask this one function.
+fn session_matches(s: &Session, o: &Opts) -> bool {
     let matches = |want: &Option<String>, got: &str| match want {
         Some(w) => got.to_lowercase().contains(&w.to_lowercase()),
         None => true,
     };
+    matches(&o.user, field(s, "user"))
+        && matches(&o.project, field(s, "project"))
+        && matches(&o.provider, field(s, "provider"))
+}
+
+pub fn sessions(o: &Opts) -> Result<String, String> {
+    let p = fetch(o)?;
     let rows: Vec<&Session> = p
         .sessions
         .iter()
-        .filter(|s| {
-            matches(&o.user, field(s, "user"))
-                && matches(&o.project, field(s, "project"))
-                && matches(&o.provider, field(s, "provider"))
-        })
+        .filter(|s| session_matches(s, o))
         .collect();
     // An unknown --provider yields "0 matching sessions", which an agent will
     // report as "nobody uses it" rather than as a typo. Say so instead: this is
@@ -974,8 +1069,6 @@ fn month_label(iso: &str, first: bool) -> String {
         .unwrap_or_default()
 }
 
-/// Bar pitch for `n` days. Bars narrow as the window grows so a 90-day chart
-/// still fits a terminal; wrapping would scramble the columns into noise.
 /// The `--provider` value, when it names no tool the parsers emit. Shared by
 /// every command that filters, so none of them can silently answer "nothing".
 fn unknown_provider(o: &Opts) -> Option<&str> {
@@ -996,8 +1089,25 @@ fn unknown_provider_note(w: Option<&str>) -> String {
     }
 }
 
+/// Bar pitch for `n` days. Bars narrow as the window grows so a 90-day chart
+/// still fits a terminal; wrapping would scramble the columns into noise.
 fn slot_for(n: usize) -> usize {
     (96 / n.max(1)).clamp(2, 5)
+}
+
+/// One y-axis tick.
+///
+/// The y-axis is a scale, not a set of values, so every tick on it shares a
+/// format. `money()` drops cents only above $1,000, which left one axis reading
+/// "$1,924 / $962.06 / $106.90" -- three shapes for one ruler. The precision is
+/// chosen from the top of the scale, so a small chart still gets cents where
+/// they carry the only signal there is.
+fn tick(cost_metric: bool, top: f64, v: f64) -> String {
+    match (cost_metric, top >= 100.0) {
+        (false, _) => num(v as i64),
+        (true, true) => format!("${}", group(v.round() as i64)),
+        (true, false) => money(v),
+    }
 }
 
 /// Lay labels onto one x-axis row of fixed width.
@@ -1041,31 +1151,24 @@ pub fn chart(o: &Opts) -> Result<String, String> {
     // the filters `sessions` offers, applied through the session id -> day join
     let filtering = o.user.is_some() || o.project.is_some() || o.provider.is_some();
     let keep: Option<HashSet<String>> = filtering.then(|| {
-        let m = |want: &Option<String>, got: &str| match want {
-            Some(w) => got.to_lowercase().contains(&w.to_lowercase()),
-            None => true,
-        };
         p.sessions
             .iter()
-            .filter(|s| {
-                m(&o.user, field(s, "user"))
-                    && m(&o.project, field(s, "project"))
-                    && m(&o.provider, field(s, "provider"))
-            })
+            .filter(|s| session_matches(s, o))
             .map(|s| s.id.clone())
             .collect()
     });
 
     let days = series_by_day(&p, o, keep.as_ref());
     let mut out = header(&p, o);
-    if let Some(w) = &o.user {
-        out.push_str(&format!("\nfiltered to person ~ {w}"));
-    }
-    if let Some(w) = &o.project {
-        out.push_str(&format!("\nfiltered to project ~ {w}"));
-    }
-    if let Some(w) = &o.provider {
-        out.push_str(&format!("\nfiltered to tool ~ {w}"));
+    // sanitized like every other rendered string: the filter is echoed back
+    for (label, w) in [
+        ("person", &o.user),
+        ("project", &o.project),
+        ("tool", &o.provider),
+    ] {
+        if let Some(w) = w {
+            out.push_str(&format!("\nfiltered to {label} ~ {}", sanitize(w)));
+        }
     }
     let totals: Vec<f64> = days.iter().map(|(_, v)| v.iter().sum()).collect();
     let top = totals.iter().cloned().fold(0.0_f64, f64::max);
@@ -1104,25 +1207,15 @@ pub fn chart(o: &Opts) -> Result<String, String> {
     }
 
     let unit = |v: f64| if o.cost_metric { money(v) } else { num(v as i64) };
-    // The y-axis is a scale, not a set of values, so every tick on it shares a
-    // format. money() drops cents only above $1,000, which left one axis
-    // reading "$1,924 / $962.06 / $106.90" -- three shapes for one ruler. The
-    // precision is chosen from the top of the scale, so a small chart still
-    // gets cents where they carry the only signal.
-    let tick_of = |v: f64| match (o.cost_metric, top >= 100.0) {
-        (false, _) => num(v as i64),
-        (true, true) => format!("${}", group(v.round() as i64)),
-        (true, false) => money(v),
-    };
     let lw = 9;
     for row in (0..h).rev() {
-        let tick = if row == h - 1 || row == (h - 1) / 2 || row == 0 {
-            tick_of(top * (row as f64 + 1.0) / h as f64)
+        let label = if row == h - 1 || row == (h - 1) / 2 || row == 0 {
+            tick(o.cost_metric, top, top * (row as f64 + 1.0) / h as f64)
         } else {
             String::new()
         };
         let line: String = grid[row].iter().collect();
-        out.push_str(&format!("\n  {:>lw$} |{}", tick, line.trim_end()));
+        out.push_str(&format!("\n  {:>lw$} |{}", label, line.trim_end()));
     }
     out.push_str(&format!("\n  {:>lw$} +{}", "", "-".repeat(n * slot)));
 
@@ -1182,14 +1275,7 @@ pub fn chart(o: &Opts) -> Result<String, String> {
 
 pub fn raw(o: &Opts) -> Result<String, String> {
     let cfg = load_config();
-    let mut path = match o.days {
-        Some(d) => format!("/api/data?days={d}"),
-        None => "/api/data?days=all".to_string(),
-    };
-    if o.fresh {
-        path.push_str("&fresh=1");
-    }
-    let v = api_get(&cfg, &path, 180)?;
+    let v = api_get(&cfg, &data_path(o), 180)?;
     Ok(serde_json::to_string(&v).unwrap_or_default())
 }
 
@@ -1510,13 +1596,13 @@ mod tests {
     fn every_tick_on_one_axis_shares_a_format() {
         // one ruler, one shape: "$1,924 / $962.06 / $106.90" mixed grouped
         // dollars with cents on the same axis
+        // the real function, not a copy of it: this test used to re-implement
+        // the closure it was checking, and so proved nothing about the chart
         let ticks = |top: f64, cost: bool| -> Vec<String> {
-            let t = |v: f64| match (cost, top >= 100.0) {
-                (false, _) => num(v as i64),
-                (true, true) => format!("${}", group(v.round() as i64)),
-                (true, false) => money(v),
-            };
-            [top, top / 2.0, top / 18.0].iter().map(|v| t(*v)).collect()
+            [top, top / 2.0, top / 18.0]
+                .iter()
+                .map(|v| tick(cost, top, *v))
+                .collect()
         };
         let big = ticks(1924.12, true);
         assert_eq!(big, vec!["$1,924", "$962", "$107"], "{big:?}");
@@ -1625,6 +1711,56 @@ mod tests {
             &[vec!["x".into(), "extra".into(), "more".into()]],
         );
         assert_eq!(t.lines().nth(2).unwrap(), "  x");
+    }
+
+    #[test]
+    fn a_filter_a_command_ignores_is_refused_rather_than_answered() {
+        // Verified against the live server: `daily --user zac` parsed fine and
+        // returned the whole organization's day-by-day totals. Read back as one
+        // person's usage, that answer is wrong by however many colleagues there
+        // are, and nothing in the output hints at it.
+        let filtered = parse_opts(&["--user".into(), "zac".into()]).unwrap();
+        let err = check_options("daily", &filtered).expect_err("daily ignores --user");
+        assert!(err.contains("daily") && err.contains("--user"), "{err}");
+        assert!(err.contains("sessions and chart"), "{err}");
+        // the two commands that do honour it still take it
+        assert!(check_options("chart", &filtered).is_ok());
+        assert!(check_options("sessions", &filtered).is_ok());
+
+        // --metric and --height are the chart's alone
+        let metric = parse_opts(&["--metric".into(), "cost".into()]).unwrap();
+        assert!(check_options("users", &metric).is_err());
+        assert!(check_options("chart", &metric).is_ok());
+
+        // --limit belongs to the commands that truncate a list
+        let limit = parse_opts(&["--limit".into(), "5".into()]).unwrap();
+        assert!(check_options("users", &limit).is_ok());
+        assert!(check_options("sessions", &limit).is_ok());
+        assert!(check_options("summary", &limit).is_err());
+
+        // --days and --fresh reach the fetch, so they apply everywhere
+        let window = parse_opts(&["--days".into(), "7".into(), "--fresh".into()]).unwrap();
+        for cmd in ["summary", "users", "daily", "chart", "raw"] {
+            assert!(check_options(cmd, &window).is_ok(), "{cmd} rejected --days");
+        }
+        // and a command line with no options is never refused
+        assert!(check_options("daily", &Opts::default()).is_ok());
+    }
+
+    #[test]
+    fn a_control_character_from_the_server_never_reaches_the_terminal() {
+        // Project names are directory basenames and titles are prompt text:
+        // both are written by whoever is being reported on. An escape here can
+        // erase the screen or forge the end of this program's own output.
+        let t = table(
+            &[("project", Align::L), ("cost", Align::R)],
+            &[vec!["\u{1b}[2Jwiped".into(), "$1.00".into()]],
+        );
+        assert!(!t.contains('\u{1b}'), "an escape survived: {t:?}");
+        assert!(t.contains("[2Jwiped"), "the visible text must stay: {t:?}");
+        // and the column is sized on what is printed, not on the stripped bytes
+        assert_eq!(t.lines().nth(2).unwrap(), "  [2Jwiped  $1.00");
+        assert_eq!(sanitize("a\u{7f}b\nc\r"), "abc");
     }
 
     #[test]
