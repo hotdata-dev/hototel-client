@@ -1,13 +1,12 @@
-<img src="docs/logo.png" alt="" width="72" height="72">
 
-# hotusage
+
+# <img src="docs/logo.png" alt="" width="25" height="25"> hotusage
 
 Know what your team's AI coding agents are actually doing — who uses them, on
 which projects, with which models, and what it would cost.
 
 <img src="docs/chart.png" alt="hotusage chart --days 30: a stacked bar chart of daily list-price-equivalent spend, split into output, input, cache write and cache read" width="1020">
 
-<sub>Example output. The names and figures above are fabricated.</sub>
 
 Install one command. It quietly reports this machine's Claude Code, Codex and
 OpenCode usage, and it teaches your coding agent to answer questions about the
