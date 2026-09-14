@@ -16,6 +16,37 @@
 #[cfg(unix)]
 use crate::service::safe_command;
 
+/// A directory only this user can read or write, created atomically.
+///
+/// The installer is downloaded and then EXECUTED, so where it lands is a
+/// security decision. A predictable name in a world-writable /tmp lets another
+/// local account pre-create the path as a symlink, or swap the file between the
+/// download and the run, and get code execution as whoever typed `update`.
+///
+/// `create` fails if the path exists, and the 0700 mode is applied as the
+/// directory is made rather than after -- so an attacker who guesses a name
+/// only makes this pick another one, and never owns a directory we then write
+/// into. This is what install.sh gets from `mktemp -d`, without a subprocess.
+#[cfg(unix)]
+fn private_tempdir() -> Result<std::path::PathBuf, String> {
+    use std::os::unix::fs::DirBuilderExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let base = std::env::temp_dir();
+    for attempt in 0..64u32 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(attempt);
+        let dir = base.join(format!("hotusage-{}-{nanos}-{attempt}", std::process::id()));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("could not create a temporary directory: {e}")),
+        }
+    }
+    Err("could not create a temporary directory".into())
+}
+
 const REPO: &str = "hotdata-dev/hotusage-client";
 const INSTALLER: &str =
     "https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/install.sh";
@@ -91,7 +122,11 @@ fn run_installer() -> Result<(), String> {
     // one into place, so a script cut between those two lines would leave the
     // machine with no binary at all. Curl's own status catches both (it fails
     // on a partial transfer), but only if something reads it.
-    let script = std::env::temp_dir().join(format!("hotusage-install-{}.sh", std::process::id()));
+    let dir = private_tempdir()?;
+    let script = dir.join("install.sh");
+    let scrub = || {
+        let _ = std::fs::remove_dir_all(&dir);
+    };
     let dl = safe_command("curl")
         .args(["-fsSL", "--proto", "=https", "--tlsv1.2", "-o"])
         .arg(&script)
@@ -99,7 +134,7 @@ fn run_installer() -> Result<(), String> {
         .status()
         .map_err(|e| format!("could not run curl: {e}"))?;
     if !dl.success() {
-        let _ = std::fs::remove_file(&script);
+        scrub();
         return Err(format!(
             "could not download the installer (curl exited {}); nothing was changed",
             dl.code().unwrap_or(-1)
@@ -107,21 +142,24 @@ fn run_installer() -> Result<(), String> {
     }
     // a zero-length or non-script body means something answered that was not
     // the installer -- a captive portal, a proxy error page
-    let body = std::fs::read_to_string(&script)
-        .map_err(|e| format!("could not read the downloaded installer: {e}"))?;
+    let body = match std::fs::read_to_string(&script) {
+        Ok(b) => b,
+        Err(e) => {
+            scrub();
+            return Err(format!("could not read the downloaded installer: {e}"));
+        }
+    };
     if !body.starts_with("#!") || body.len() < 512 {
-        let _ = std::fs::remove_file(&script);
+        scrub();
         return Err("what downloaded is not the installer; nothing was changed".into());
     }
     println!("hotusage: running the installer...\n");
     // The running binary keeps its own inode when install.sh unlinks the path,
     // so replacing it underneath this process is safe -- this command finishes
     // on the old build and the next invocation is the new one.
-    let status = safe_command("sh")
-        .arg(&script)
-        .status()
-        .map_err(|e| format!("could not run the installer: {e}"))?;
-    let _ = std::fs::remove_file(&script);
+    let status = safe_command("sh").arg(&script).status();
+    scrub();
+    let status = status.map_err(|e| format!("could not run the installer: {e}"))?;
     if status.success() {
         Ok(())
     } else {
@@ -214,6 +252,24 @@ mod tests {
         assert!(!is_newer("0.6.1", "nonsense"));
         assert!(!is_newer("nonsense", "0.6.1"));
         assert!(!is_newer("", ""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_download_directory_is_private_and_unpredictable() {
+        use std::os::unix::fs::PermissionsExt;
+        let a = private_tempdir().expect("a");
+        let b = private_tempdir().expect("b");
+        // only this user may read, write or enter it: the file inside is
+        // executed, so another local account must not be able to reach it
+        let mode = std::fs::metadata(&a).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "mode {mode:o}");
+        assert_ne!(a, b, "two calls must not collide");
+        // an attacker who guesses a name gets a different one chosen, never a
+        // directory they own and we then write into
+        assert!(std::fs::DirBuilder::new().create(&a).is_err(), "not atomic");
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
     }
 
     #[test]
