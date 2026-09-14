@@ -70,8 +70,15 @@ if curl -fsSL -o "$tmp/SHA256SUMS" \
   fi
   echo "checksum ok"
 else
-  # releases cut before SHA256SUMS existed have nothing to check against
-  echo "warning: $tag publishes no SHA256SUMS - installing unverified" >&2
+  # Fail, do not warn and carry on. This branch cannot tell "an old release
+  # publishes no SHA256SUMS" from "something prevented me fetching it", and
+  # every supported release publishes one -- so the only case it fires on in
+  # practice is a verification that was blocked, which is precisely when
+  # skipping it is worst. The binaries are unsigned; this is the only integrity
+  # check there is.
+  echo "error: could not fetch SHA256SUMS for $tag, so the download cannot be" >&2
+  echo "  verified. Nothing was installed and nothing was changed." >&2
+  exit 1
 fi
 
 tar -xzf "$tmp/$asset" -C "$tmp"

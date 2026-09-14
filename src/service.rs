@@ -127,6 +127,22 @@ fn remove_legacy() {
     );
 }
 
+/// `launchctl` takes the plist path as a command-line argument, which has to be
+/// a `str`. The path is built from `$HOME`, and a home directory is not
+/// guaranteed to be UTF-8 -- `to_str().unwrap()` turned that into a panic with
+/// no message, in the one command whose whole job is reporting what it did.
+/// `remove_legacy` in this file already degrades gracefully; these return the
+/// failure, because an install that cannot register itself has not happened.
+#[cfg(target_os = "macos")]
+fn arg_str(path: &std::path::Path) -> Result<&str, String> {
+    path.to_str().ok_or_else(|| {
+        format!(
+            "{} is not valid UTF-8, so launchctl cannot be given it",
+            path.display()
+        )
+    })
+}
+
 #[cfg(target_os = "macos")]
 pub fn install() -> Result<String, String> {
     let exe = exe()?;
@@ -153,12 +169,16 @@ pub fn install() -> Result<String, String> {
         exe.display()
     );
     let path = crate::parsers::home_dir().join(format!("Library/LaunchAgents/{LABEL}.plist"));
-    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let arg = arg_str(&path)?.to_string();
+    let dir = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     remove_legacy();
     // reload cleanly if already installed
-    let _ = run("launchctl", &["unload", path.to_str().unwrap()]);
+    let _ = run("launchctl", &["unload", &arg]);
     fs::write(&path, plist).map_err(|e| e.to_string())?;
-    run("launchctl", &["load", path.to_str().unwrap()])?;
+    run("launchctl", &["load", &arg])?;
     Ok(format!("installed LaunchAgent {} (menu bar app, starts at login)", path.display()))
 }
 
@@ -167,7 +187,7 @@ pub fn uninstall() -> Result<String, String> {
     remove_legacy();
     let path = crate::parsers::home_dir().join(format!("Library/LaunchAgents/{LABEL}.plist"));
     if path.is_file() {
-        let _ = run("launchctl", &["unload", path.to_str().unwrap()]);
+        let _ = run("launchctl", &["unload", arg_str(&path)?]);
         fs::remove_file(&path).map_err(|e| e.to_string())?;
         Ok(format!("removed {}", path.display()))
     } else {

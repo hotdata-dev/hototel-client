@@ -182,6 +182,14 @@ fn fingerprint(b: &Built) -> String {
     format!("{}|{}", b.session.ended_at, b.session.requests)
 }
 
+/// How a session is named in the sync state file. Built in one place because
+/// the two sites that need it -- deciding what changed, and recording what was
+/// delivered -- must agree exactly: a difference between them would re-send
+/// every session forever while claiming each one had been stored.
+fn state_key(b: &Built) -> String {
+    format!("{}:{}", b.session.provider, b.session.session_id)
+}
+
 /// Exact loopback-host match, not substring: "localhost.example.net" must not
 /// qualify, and "[::1]:8377" must.
 fn is_loopback(url: &str) -> bool {
@@ -299,6 +307,12 @@ pub fn signin_wait(server_url: &str, s: &SignIn) -> Result<String, String> {
     require_secure(server_url)?;
     let url = format!("{}/api/device/poll", server_url.trim_end_matches('/'));
     let deadline = std::time::Instant::now() + Duration::from_secs(s.expires_in);
+    // Kept so the timeout can say what actually went wrong. Every failure here
+    // is retried, which is right for a blip -- but a server answering 500, an
+    // expired certificate or an unresolvable host fails identically forever,
+    // and reporting only "timed out" after fifteen silent minutes sends people
+    // looking at the browser tab instead of at the network.
+    let mut last_error: Option<String> = None;
     while std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_secs(s.interval));
         let resp = agent(30)
@@ -310,11 +324,17 @@ pub fn signin_wait(server_url: &str, s: &SignIn) -> Result<String, String> {
                 return Err("this sign-in request expired - try again".into())
             }
             // a transient network blip should not abandon the whole attempt
-            Err(_) => continue,
+            Err(e) => {
+                last_error = Some(e.to_string());
+                continue;
+            }
         };
         let v: serde_json::Value = match resp.body_mut().read_json() {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                last_error = Some(format!("unreadable response: {e}"));
+                continue;
+            }
         };
         match v.get("status").and_then(|x| x.as_str()).unwrap_or("") {
             "approved" => {
@@ -338,7 +358,10 @@ pub fn signin_wait(server_url: &str, s: &SignIn) -> Result<String, String> {
             _ => {}
         }
     }
-    Err("sign-in timed out - try again".into())
+    Err(match last_error {
+        Some(e) => format!("sign-in timed out - last error: {e}"),
+        None => "sign-in timed out - try again".to_string(),
+    })
 }
 
 /// True when this collector holds a credential (so the menu can offer Sign
@@ -455,19 +478,29 @@ pub fn sync(config: &Config) -> Result<String, String> {
             .to_string());
     }
     require_secure(&config.server_url)?;
-    let built: Vec<Built> = scan_all().into_iter().filter_map(build_session).collect();
+    let scan = scan_all();
+    let built: Vec<Built> = scan
+        .sessions
+        .into_iter()
+        .filter_map(build_session)
+        .collect();
     let total = built.len();
+    // An unreadable transcript parses to nothing, so a directory this process
+    // has lost permission to read reports a clean, idle machine. Say it in the
+    // status line: "up to date (0 sessions)" is the one answer that must never
+    // mean "I could not look".
+    let skipped = match scan.unreadable {
+        0 => String::new(),
+        n => format!(" ({n} files unreadable)"),
+    };
     let mut state = load_state();
 
     let changed: Vec<&Built> = built
         .iter()
-        .filter(|b| {
-            let key = format!("{}:{}", b.session.provider, b.session.session_id);
-            state.get(&key) != Some(&fingerprint(b))
-        })
+        .filter(|b| state.get(&state_key(b)) != Some(&fingerprint(b)))
         .collect();
     if changed.is_empty() {
-        return Ok(format!("up to date ({total} sessions)"));
+        return Ok(format!("up to date ({total} sessions){skipped}"));
     }
 
     let payload = json!({
@@ -502,11 +535,13 @@ pub fn sync(config: &Config) -> Result<String, String> {
                 ));
             }
             for b in &changed {
-                let key = format!("{}:{}", b.session.provider, b.session.session_id);
-                state.insert(key, fingerprint(b));
+                state.insert(state_key(b), fingerprint(b));
             }
             save_state(&state).map_err(|e| format!("failed to save state: {e}"))?;
-            Ok(format!("sent {} changed of {total} sessions", changed.len()))
+            Ok(format!(
+                "sent {} changed of {total} sessions{skipped}",
+                changed.len()
+            ))
         }
         Err(ureq::Error::RedirectFailed) => Err(format!(
             "{} redirected the upload - point server_url at the API host itself",

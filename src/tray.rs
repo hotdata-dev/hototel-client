@@ -41,9 +41,6 @@ fn open_config() {
     let _ = crate::service::safe_command("notepad").arg(&path).spawn();
 }
 
-/// Flame silhouette, pre-rasterized to a 36x36 alpha mask and baked into the
-/// binary. Colorized per platform: black on macOS (a template image, so the
-/// system recolors it for dark/light menu bars), white on the Windows tray.
 /// The nine-cell mark from the website, drawn at runtime.
 ///
 /// Mirrors server/static/icon.svg exactly: a 32-unit grid, 8-unit cells with a
@@ -121,6 +118,18 @@ fn auth_label(signed_in: bool) -> &'static str {
     if signed_in { "Sign Out" } else { "Sign In..." }
 }
 
+/// The identity row above it. Four events rewrite this row -- startup, the
+/// identity poll, a sign-out and a sign-in -- and each built the string itself,
+/// so the menu could end up describing this machine four slightly different
+/// ways depending on which path last touched it.
+fn user_label(email: Option<&str>) -> String {
+    let host = sync::hostname();
+    match email {
+        Some(e) => format!("{e} on {host}"),
+        None => format!("Not signed in on {host}"),
+    }
+}
+
 fn logo_icon() -> tray_icon::Icon {
     tray_icon::Icon::from_rgba(logo_rgba(ICON_PX), ICON_PX, ICON_PX).expect("icon")
 }
@@ -178,11 +187,7 @@ pub fn run() -> ! {
                 let status = MenuItem::new("Starting...", false, None);
                 let signed_in = sync::is_signed_in();
                 let user = MenuItem::new(
-                    if signed_in {
-                        format!("{} on {}", config.user_email, sync::hostname())
-                    } else {
-                        format!("Not signed in on {}", sync::hostname())
-                    },
+                    user_label(signed_in.then_some(config.user_email.as_str())),
                     false,
                     None,
                 );
@@ -300,11 +305,7 @@ pub fn run() -> ! {
                 if signed_in != last_signed_in {
                     last_signed_in = signed_in;
                     if let Some(item) = &user_item {
-                        item.set_text(if signed_in {
-                            format!("{} on {}", cfg.user_email, sync::hostname())
-                        } else {
-                            format!("Not signed in on {}", sync::hostname())
-                        });
+                        item.set_text(user_label(signed_in.then_some(cfg.user_email.as_str())));
                     }
                     if let Some(item) = &auth_item {
                         item.set_text(auth_label(signed_in));
@@ -339,7 +340,7 @@ pub fn run() -> ! {
                     return;
                 }
                 if let Some(item) = &user_item {
-                    item.set_text(format!("Not signed in on {}", sync::hostname()));
+                    item.set_text(user_label(None));
                 }
                 if let Some(item) = &auth_item {
                     item.set_text(auth_label(false));
@@ -352,7 +353,7 @@ pub fn run() -> ! {
                 }
                 if let Some(email) = email {
                     if let Some(item) = &user_item {
-                        item.set_text(format!("{} on {}", email, sync::hostname()));
+                        item.set_text(user_label(Some(&email)));
                     }
                     if let Some(item) = &auth_item {
                         item.set_text(auth_label(true));
@@ -388,6 +389,15 @@ mod tests {
         // work out which applied
         assert_eq!(auth_label(true), "Sign Out");
         assert_eq!(auth_label(false), "Sign In...");
+    }
+
+    #[test]
+    fn the_identity_row_reads_the_same_however_it_was_reached() {
+        // startup, the identity poll, a sign-out and a sign-in all rewrite this
+        // row; they used to format it separately
+        let host = sync::hostname();
+        assert_eq!(user_label(Some("ada@x.dev")), format!("ada@x.dev on {host}"));
+        assert_eq!(user_label(None), format!("Not signed in on {host}"));
     }
 
     #[test]
