@@ -236,6 +236,15 @@ fn run_usage(cmd: &str, rest: &[String]) -> ! {
             std::process::exit(2);
         }
     };
+    // `session` is the only command that takes a positional argument. Every
+    // other one silently ignored a stray one, so `raw --days 7 sess-123` dumped
+    // the whole org and looked like it had honoured the id.
+    if cmd != "session" {
+        if let Some(extra) = &opts.id {
+            eprintln!("hotusage: '{cmd}' takes no argument (got '{extra}')");
+            std::process::exit(2);
+        }
+    }
     let out = match cmd {
         "summary" => usage::summary(&opts),
         "users" => usage::users(&opts),
