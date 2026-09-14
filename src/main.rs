@@ -12,6 +12,7 @@
 //!   hotusage signout          revoke this machine's token and forget it
 //!   hotusage whoami           who this machine is signed in as, and what it may do
 //!   hotusage version          which build this is, and where it lives
+//!   hotusage update           install the latest release (--check only reports)
 //!   hotusage sync             sync now, then exit
 //!   hotusage daemon           headless sync loop (any OS)
 //!   hotusage dump             print parsed sessions as JSON (debug)
@@ -30,6 +31,7 @@ mod parsers;
 mod service;
 mod skill;
 mod sync;
+mod update;
 mod usage;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod tray;
@@ -351,6 +353,7 @@ fn main() {
         "signout" => run_signout(),
         "whoami" => run_whoami(),
         "version" | "--version" | "-V" => run_version(),
+        "update" => std::process::exit(update::run(flag("--check"), flag("--force"))),
         "skill" => run_skill(&rest),
         // `--once`/`--dump`/`--daemon` are how already-registered services and
         // older docs invoke this, so both spellings stay.
@@ -401,6 +404,7 @@ hotusage — usage analytics for AI coding agents
   hotusage signout           revoke this machine's token
   hotusage whoami            who this machine is signed in as, and what it may do
   hotusage version           which build this is, and where it lives
+  hotusage update [--check]  install the latest release (--check only reports)
   hotusage sync              sync now, then exit
   hotusage daemon            headless sync loop
   hotusage dump              print parsed sessions as JSON (debug)
