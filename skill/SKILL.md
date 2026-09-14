@@ -142,8 +142,9 @@ What hotusage uploads, in full:
 **A session title is not always the agent's own summary.** Claude Code and Codex
 record one when they have written one; when they have not, hotusage falls back
 to **the first line of the session's first prompt, truncated to about 80
-characters**. Titles in `sessions` and `session` output are therefore sometimes
-verbatim prompt text.
+characters**. Titles are therefore sometimes verbatim prompt text. Neither the
+`sessions` table nor `session <id>` prints one — they show the project and the
+working directory — but titles do appear in `raw` output and on the dashboard.
 
 Nothing else is sent: no message bodies, no code, no file contents, no
 transcript beyond that one title line.

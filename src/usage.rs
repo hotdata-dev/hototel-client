@@ -408,22 +408,35 @@ impl Default for Opts {
     }
 }
 
-/// Which commands honour each option. Everything not listed here is accepted
-/// everywhere (`--days`, `--fresh`).
-const APPLIES_TO: [(&str, &str); 5] = [
-    ("--user", "sessions and chart"),
-    ("--project", "sessions and chart"),
-    ("--provider", "sessions and chart"),
-    ("--metric", "chart"),
-    ("--height", "chart"),
+/// Which commands honour each option -- the single source of truth for both
+/// halves of the check: whether to refuse the flag, and the sentence that says
+/// where it would have worked. These used to be two lists, so a command added
+/// to one could be left out of the other and the error would name the wrong
+/// set. Everything not listed here is accepted everywhere (`--days`, `--fresh`).
+const APPLIES_TO: [(&str, &[&str]); 6] = [
+    ("--user", &["sessions", "chart"]),
+    ("--project", &["sessions", "chart"]),
+    ("--provider", &["sessions", "chart"]),
+    ("--metric", &["chart"]),
+    ("--height", &["chart"]),
+    ("--limit", &["users", "projects", "sessions", "session"]),
 ];
 
+fn applies_to(flag: &str) -> Option<&'static [&'static str]> {
+    APPLIES_TO.iter().find(|(f, _)| *f == flag).map(|(_, c)| *c)
+}
+
 fn honoured_by(cmd: &str, flag: &str) -> bool {
-    match flag {
-        "--user" | "--project" | "--provider" => matches!(cmd, "sessions" | "chart"),
-        "--metric" | "--height" => cmd == "chart",
-        "--limit" => matches!(cmd, "users" | "projects" | "sessions" | "session"),
-        _ => true, // --days and --fresh reach the fetch, so every command uses them
+    // an unlisted flag reaches the fetch, so every command uses it
+    applies_to(flag).is_none_or(|cmds| cmds.contains(&cmd))
+}
+
+/// "sessions and chart", "users, projects, sessions and session".
+fn listed(cmds: &[&str]) -> String {
+    match cmds.split_last() {
+        Some((last, [])) => (*last).to_string(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
     }
 }
 
@@ -439,11 +452,7 @@ pub fn check_options(cmd: &str, o: &Opts) -> Result<(), String> {
         if honoured_by(cmd, flag) {
             continue;
         }
-        let applies = APPLIES_TO
-            .iter()
-            .find(|(f, _)| f == flag)
-            .map(|(_, who)| *who)
-            .unwrap_or("users, projects, sessions and session");
+        let applies = listed(applies_to(flag).unwrap_or(&[]));
         return Err(format!(
             "'{cmd}' does not take {flag} (it applies to {applies})"
         ));
@@ -933,6 +942,16 @@ pub fn sessions(o: &Opts) -> Result<String, String> {
     Ok(out)
 }
 
+/// The two lines above the per-request table.
+///
+/// Split out because `cwd` is the one server-supplied string in this report
+/// that never passes through `table()`, and so never reaches the sanitizing
+/// chokepoint on its own. Directory paths are written by whoever is being
+/// reported on, and this output is read straight into a coding agent's context.
+fn session_header(id: &str, cwd: &str, requests: usize) -> String {
+    format!("session {id}\n  cwd: {}\n  {requests} requests", sanitize(cwd))
+}
+
 pub fn session(o: &Opts) -> Result<String, String> {
     let id = o
         .id
@@ -953,10 +972,7 @@ pub fn session(o: &Opts) -> Result<String, String> {
         .cloned()
         .unwrap_or_default();
     let cwd = v.get("cwd").and_then(|c| c.as_str()).unwrap_or("");
-    let mut out = format!(
-        "session {id}\n  cwd: {cwd}\n  {} requests",
-        detail.len()
-    );
+    let mut out = session_header(id, cwd, detail.len());
     if detail.is_empty() {
         return Ok(out);
     }
@@ -1080,9 +1096,12 @@ fn unknown_provider(o: &Opts) -> Option<&str> {
 
 fn unknown_provider_note(w: Option<&str>) -> String {
     match w {
+        // sanitized like every other rendered string: the value is echoed back
+        // from the command line, and a pasted one can carry escapes
         Some(w) => format!(
-            "\n\n  note: '{w}' is not a known tool, so this matched nothing on \
+            "\n\n  note: '{}' is not a known tool, so this matched nothing on \
              that filter. Valid ids are {}.",
+            sanitize(w),
             crate::core::PROVIDERS.join(", ")
         ),
         None => String::new(),
@@ -1761,6 +1780,20 @@ mod tests {
         // and the column is sized on what is printed, not on the stripped bytes
         assert_eq!(t.lines().nth(2).unwrap(), "  [2Jwiped  $1.00");
         assert_eq!(sanitize("a\u{7f}b\nc\r"), "abc");
+    }
+
+    #[test]
+    fn the_session_cwd_is_sanitized_even_though_it_skips_the_table() {
+        // `session <id>` prints the server's cwd on a bare line, so it is the
+        // one rendered string that never reaches the chokepoint in `table()`.
+        // Directory names are written by whoever is being reported on.
+        let h = session_header("s1", "/repos/\u{1b}[2Jwiped", 3);
+        assert!(!h.contains('\u{1b}'), "an escape survived: {h:?}");
+        assert!(h.contains("/repos/[2Jwiped"), "the visible path must stay: {h:?}");
+        assert!(h.contains("3 requests"));
+        // and the echoed --provider value, which is pasted as often as typed
+        let note = unknown_provider_note(Some("cur\u{1b}[2Jsor"));
+        assert!(!note.contains('\u{1b}'), "an escape survived: {note:?}");
     }
 
     #[test]
