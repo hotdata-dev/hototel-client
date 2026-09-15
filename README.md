@@ -126,7 +126,7 @@ it lives. Your already-reported usage stays in your organization's dashboard.
 | Nothing appearing in the dashboard | `hototel sync` to run one now and see the error |
 | Unsure which build you have | `hototel version` — prints the version and its path |
 
-Upgrading from the old `hotusage-collector`? The installer removes it and
+Upgrading from the old `hotusage` (or the older `hotusage-collector`)? The installer removes it and
 retires its background service, so you will not end up with two running. Run
 `hototel signin --force` once afterwards to grant read access for the skill.
 

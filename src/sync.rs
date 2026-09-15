@@ -1,5 +1,5 @@
 //! Config, fingerprint state, and the sync operation (scan -> diff -> POST).
-//! Shares ~/.hototel/collector.json and collector-state.json with the Python
+//! Shares ~/.hotusage/collector.json and collector-state.json with the Python
 //! collector, so either implementation can take over from the other.
 
 use crate::core::{build_session, Built};
@@ -25,7 +25,7 @@ fn restrict(path: &std::path::Path, mode: u32) {
 #[cfg(not(unix))]
 fn restrict(_path: &std::path::Path, _mode: u32) {}
 
-/// ~/.hototel, created 0700. Public because it is also where the detached
+/// ~/.hotusage, created 0700. Public because it is also where the detached
 /// updater's log goes: that file records an upgrade that killed the process
 /// which started it, so it cannot live anywhere the next run would not look.
 pub fn ensure_config_dir() -> std::io::Result<PathBuf> {

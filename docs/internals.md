@@ -31,7 +31,7 @@ An **Update to x.y.z** row appears above Sync Now, and only while this build is
 behind the latest release — a background thread checks GitHub ten seconds after
 launch and every six hours after that, silently on any failure, so an offline
 machine's menu is the one described above. Clicking it starts `hototel update`
-in a new session via `setsid(2)`, logging to `~/.hototel/update.log`: the
+in a new session via `setsid(2)`, logging to `~/.hotusage/update.log`: the
 update re-registers the login service, which kills the tray, and an updater
 still attached to that job would be killed with it — possibly after the
 LaunchAgent had been unloaded and before the new binary was in place. Windows
@@ -62,7 +62,7 @@ hototel uninstall    # stop + remove, and remove the skill
 
 The registration points at the binary's current path: move the binary, re-run
 `install`. Installing or uninstalling also retires any registration left under
-the old `hotusage-collector` name, so an upgrade never leaves two daemons
+the old `hotusage` and `hotusage-collector` names, so an upgrade never leaves two daemons
 syncing one machine.
 
 ## The agent skill
@@ -124,7 +124,7 @@ command would then refuse.
 
 ## Configuration
 
-First run writes `~/.hototel/collector.json`:
+First run writes `~/.hotusage/collector.json`:
 
 ```json
 {
@@ -141,12 +141,12 @@ before scopes existed: it reports usage but cannot read it, which is why
 `hototel summary` asks such a machine to sign in again.
 
 Sync state (per-session fingerprints, so only changed sessions are re-sent)
-lives in `~/.hototel/collector-state.json`. The filenames predate the rename
-from `hotusage-collector` and are kept so deployed machines keep their sign-in.
+lives in `~/.hotusage/collector-state.json`. The filenames predate the rename
+from the `hotusage` days and are kept so deployed machines keep their sign-in.
 
 ## Security
 
-- `~/.hototel/` is created `0700`; both files are written `0600`. The config
+- `~/.hotusage/` is created `0700`; both files are written `0600`. The config
   holds a bearer token.
 - Only `https://` servers are accepted (loopback excepted for local dev), and
   redirects are refused rather than followed — a redirected POST arrives as a

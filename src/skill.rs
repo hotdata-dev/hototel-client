@@ -105,7 +105,6 @@ pub fn install(force: bool) -> Vec<String> {
         if !root.is_dir() && !force {
             continue;
         }
-        remove_legacy(&root);
         // Someone else's skill under this name is theirs, not ours to replace.
         // `skill install`, which is asked for by name, may still overwrite --
         // that is how an edited copy is reset.
@@ -118,6 +117,10 @@ pub fn install(force: bool) -> Vec<String> {
             ));
             continue;
         }
+        // Only retire the old hotusage skill once a replacement is certain to
+        // be written: above the guard, a hand-written skills/hototel would
+        // have cost the user their working hotusage skill with nothing new.
+        remove_legacy(&root);
         match write_skill(&root) {
             Ok(path) => done.push(format!("skill installed for {label}: {}", path.display())),
             Err(e) => done.push(format!("could not install the skill for {label}: {e}")),
