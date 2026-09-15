@@ -52,7 +52,7 @@ fn private_tempdir() -> Result<std::path::PathBuf, String> {
     Err("could not create a temporary directory".into())
 }
 
-const REPO: &str = "hotdata-dev/hotusage-client";
+const REPO: &str = "hotdata-dev/hototel-client";
 
 /// The installer as it stood at one tag. Pinned rather than tracking `main`:
 /// see the module comment -- this script is executed, and the tag resolved by

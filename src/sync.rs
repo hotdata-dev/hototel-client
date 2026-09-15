@@ -61,7 +61,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            server_url: "https://www.hotusage.ai".into(),
+            server_url: "https://hototel.com".into(),
             token: String::new(),
             user_email: String::new(),
             interval_minutes: 15,
@@ -117,12 +117,14 @@ pub fn load_config() -> Config {
     if cfg.user_email.is_empty() {
         cfg.user_email = guess_email();
     }
-    // Installs created before the default changed point at the apex, which
-    // 301s to www; a POST that follows it arrives as a GET (401 on sign-in,
-    // a silently discarded upload on sync). Changing the default cannot help
-    // those machines, because their config file already exists -- so repair
-    // the value itself, on the exact host and nothing else.
-    if let Some(fixed) = apex_to_www(&cfg.server_url) {
+    // The service moved from hotusage.ai to hototel.com (Sep 2026; the old
+    // domain still serves during the transition, but is being retired).
+    // Changing the default cannot help existing machines, because their
+    // config file already exists -- so repair the value itself, on the exact
+    // legacy hosts and nothing else. Same token, same backend: only the host
+    // changes. (This replaces the earlier apex-to-www repair, which existed
+    // because the old apex once 301'd POSTs into GETs.)
+    if let Some(fixed) = legacy_to_hototel(&cfg.server_url) {
         cfg.server_url = fixed;
         let _ = save_config(&cfg);
     }
@@ -135,12 +137,14 @@ pub fn load_config() -> Config {
     cfg
 }
 
-/// `https://hotusage.ai[/...]` -> `https://www.hotusage.ai[/...]`, or None
-/// when nothing needs changing.
-fn apex_to_www(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://hotusage.ai")?;
+/// `https://hotusage.ai[/...]` or `https://www.hotusage.ai[/...]` ->
+/// `https://hototel.com[/...]`, or None when nothing needs changing.
+fn legacy_to_hototel(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://www.hotusage.ai")
+        .or_else(|| url.strip_prefix("https://hotusage.ai"))?;
     if rest.is_empty() || rest.starts_with('/') {
-        Some(format!("https://www.hotusage.ai{rest}"))
+        Some(format!("https://hototel.com{rest}"))
     } else {
         None
     }
@@ -557,17 +561,22 @@ pub fn sync(config: &Config) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{apex_to_www, is_loopback, validated_url};
+    use super::{is_loopback, legacy_to_hototel, validated_url};
 
     #[test]
-    fn apex_is_repaired_but_nothing_else_is() {
-        assert_eq!(apex_to_www("https://hotusage.ai").as_deref(),
-                   Some("https://www.hotusage.ai"));
-        assert_eq!(apex_to_www("https://hotusage.ai/").as_deref(),
-                   Some("https://www.hotusage.ai/"));
-        assert!(apex_to_www("https://www.hotusage.ai").is_none());
-        assert!(apex_to_www("https://hotusage.ai.evil.example").is_none());
-        assert!(apex_to_www("https://internal.example").is_none());
+    fn legacy_hosts_are_repaired_but_nothing_else_is() {
+        assert_eq!(legacy_to_hototel("https://hotusage.ai").as_deref(),
+                   Some("https://hototel.com"));
+        assert_eq!(legacy_to_hototel("https://hotusage.ai/").as_deref(),
+                   Some("https://hototel.com/"));
+        assert_eq!(legacy_to_hototel("https://www.hotusage.ai").as_deref(),
+                   Some("https://hototel.com"));
+        assert_eq!(legacy_to_hototel("https://www.hotusage.ai/x").as_deref(),
+                   Some("https://hototel.com/x"));
+        assert!(legacy_to_hototel("https://hototel.com").is_none());
+        assert!(legacy_to_hototel("https://hotusage.ai.evil.example").is_none());
+        assert!(legacy_to_hototel("https://www.hotusage.ai.evil.example").is_none());
+        assert!(legacy_to_hototel("https://internal.example").is_none());
     }
 
     #[test]

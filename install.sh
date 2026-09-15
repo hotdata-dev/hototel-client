@@ -1,7 +1,7 @@
 #!/bin/sh
 # hotusage installer for macOS and Linux.
 #
-#   curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hototel-client/main/install.sh | sh
 #
 # Downloads the latest release binary for this machine, puts it on PATH,
 # registers it as a background agent (macOS LaunchAgent / systemd user unit),
@@ -9,7 +9,7 @@
 # about your organization's usage.
 set -eu
 
-REPO=hotdata-dev/hotusage-client
+REPO=hotdata-dev/hototel-client
 BIN=hotusage
 # What this was called before 0.4.0. `$BIN install` retires the old service
 # registration itself; the stale binary is this script's job, because a copy
@@ -175,7 +175,7 @@ TXT
     cat <<TXT
 
 note: this machine can report usage but not read it, so the agent skill cannot
-answer questions yet. The hotusage server needs updating; after that, run:
+answer questions yet. The hototel server needs updating; after that, run:
   $dest/$BIN signin --force
 TXT
   fi

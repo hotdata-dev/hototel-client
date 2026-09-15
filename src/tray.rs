@@ -52,7 +52,7 @@ const UPDATE_ITEM_POSITION: usize = 4;
 
 /// The releases page, for the platform that has no scripted install.
 #[cfg(not(unix))]
-const RELEASES_URL: &str = "https://github.com/hotdata-dev/hotusage-client/releases/latest";
+const RELEASES_URL: &str = "https://github.com/hotdata-dev/hototel-client/releases/latest";
 
 /// What the update row says. It names the version rather than saying "an
 /// update is available", so the click is a decision about a known thing.
