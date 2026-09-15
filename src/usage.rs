@@ -956,7 +956,7 @@ pub fn session(o: &Opts) -> Result<String, String> {
     let id = o
         .id
         .as_deref()
-        .ok_or("usage: hotusage session <session-id>")?;
+        .ok_or("usage: hototel session <session-id>")?;
     if !id
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')

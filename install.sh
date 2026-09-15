@@ -1,5 +1,5 @@
 #!/bin/sh
-# hotusage installer for macOS and Linux.
+# hototel installer for macOS and Linux.
 #
 #   curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hototel-client/main/install.sh | sh
 #
@@ -10,11 +10,12 @@
 set -eu
 
 REPO=hotdata-dev/hototel-client
-BIN=hotusage
-# What this was called before 0.4.0. `$BIN install` retires the old service
-# registration itself; the stale binary is this script's job, because a copy
-# left on PATH would shadow or confuse the new one.
-LEGACY_BIN=hotusage-collector
+BIN=hototel
+# What this was called before: hotusage until 0.10.0, hotusage-collector
+# before 0.4.0. `$BIN install` retires the old service registrations itself;
+# the stale binaries are this script's job, because a copy left on PATH would
+# shadow or confuse the new one.
+LEGACY_BINS="hotusage hotusage-collector"
 
 os=$(uname -s)
 arch=$(uname -m)
@@ -135,13 +136,15 @@ if "$dest/$BIN" install; then
   # KeepAlive/Restart=always would respawn-fail in a loop until someone
   # re-ran install by hand.
   for old in /usr/local/bin "$HOME/.local/bin"; do
-    if [ -f "$old/$LEGACY_BIN" ] && [ -w "$old" ]; then
-      rm -f "$old/$LEGACY_BIN" && echo "removed the old $old/$LEGACY_BIN"
-    fi
+    for legacy in $LEGACY_BINS; do
+      if [ -f "$old/$legacy" ] && [ -w "$old" ]; then
+        rm -f "$old/$legacy" && echo "removed the old $old/$legacy"
+      fi
+    done
   done
 else
   echo "note: agent registration failed (no desktop/systemd session?) - run '$dest/$BIN install' from a login session" >&2
-  echo "note: the previous $LEGACY_BIN install was left in place until that succeeds" >&2
+  echo "note: any previous hotusage/hotusage-collector install was left in place until that succeeds" >&2
 fi
 
 # Sign in straight away: opens the browser, waits for approval, then syncs.

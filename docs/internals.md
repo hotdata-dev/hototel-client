@@ -1,4 +1,4 @@
-# hotusage client — internals
+# hototel client — internals
 
 Everything the [README](../README.md) deliberately leaves out: how the binary is
 built, what it registers on each platform, exactly what it puts on the wire, and
@@ -8,11 +8,11 @@ the choices that are load-bearing enough to be worth writing down.
 
 ```bash
 cargo build --release
-./target/release/hotusage           # macOS/Windows: tray app; Linux: daemon
-./target/release/hotusage daemon    # headless sync loop (any OS)
-./target/release/hotusage sync      # one-shot sync
-./target/release/hotusage dump      # print parsed sessions as JSON (debug)
-./target/release/hotusage help      # every subcommand
+./target/release/hototel           # macOS/Windows: tray app; Linux: daemon
+./target/release/hototel daemon    # headless sync loop (any OS)
+./target/release/hototel sync      # one-shot sync
+./target/release/hototel dump      # print parsed sessions as JSON (debug)
+./target/release/hototel help      # every subcommand
 ```
 
 `--daemon`, `--once` and `--dump` are still accepted: already-registered
@@ -23,15 +23,15 @@ Tray menu (macOS/Windows): last-sync status, who this machine is signed in as,
 one auth row that reads **Sign In…** or **Sign Out** depending on state (never
 both), Sync Now, Open Dashboard, Edit Config, Quit. Which action that row
 performs is decided from the config when it is clicked, not from its label —
-a `hotusage signin` in a terminal can change the state between the menu's
+a `hototel signin` in a terminal can change the state between the menu's
 ten-second refresh and the click. The tray icon is the nine-cell mark from the
 website, drawn at runtime from the same geometry as the site's `icon.svg`.
 
 An **Update to x.y.z** row appears above Sync Now, and only while this build is
 behind the latest release — a background thread checks GitHub ten seconds after
 launch and every six hours after that, silently on any failure, so an offline
-machine's menu is the one described above. Clicking it starts `hotusage update`
-in a new session via `setsid(2)`, logging to `~/.hotusage/update.log`: the
+machine's menu is the one described above. Clicking it starts `hototel update`
+in a new session via `setsid(2)`, logging to `~/.hototel/update.log`: the
 update re-registers the login service, which kills the tray, and an updater
 still attached to that job would be killed with it — possibly after the
 LaunchAgent had been unloaded and before the new binary was in place. Windows
@@ -50,14 +50,14 @@ Cursor and Gemini CLI store no local token counts.
 ## Service registration
 
 ```bash
-hotusage install      # register + start now, and install the skill
-hotusage uninstall    # stop + remove, and remove the skill
+hototel install      # register + start now, and install the skill
+hototel uninstall    # stop + remove, and remove the skill
 ```
 
 | OS | Mechanism | What runs |
 |---|---|---|
-| macOS | LaunchAgent `~/Library/LaunchAgents/dev.hotdata.hotusage.plist` (RunAtLoad + KeepAlive, log at `~/Library/Logs/hotusage.log`) | menu bar app |
-| Linux | systemd user unit `~/.config/systemd/user/hotusage.service` (Restart=always) | `daemon`, no indicator |
+| macOS | LaunchAgent `~/Library/LaunchAgents/dev.hotdata.hototel.plist` (RunAtLoad + KeepAlive, log at `~/Library/Logs/hototel.log`) | menu bar app |
+| Linux | systemd user unit `~/.config/systemd/user/hototel.service` (Restart=always) | `daemon`, no indicator |
 | Windows | `HKCU\…\CurrentVersion\Run` key (a session app — Windows Services cannot show tray icons) | taskbar tray app |
 
 The registration points at the binary's current path: move the binary, re-run
@@ -67,12 +67,12 @@ syncing one machine.
 
 ## The agent skill
 
-`hotusage install` writes `SKILL.md` into `~/.claude/skills/hotusage/` and
-`~/.codex/skills/hotusage/` for whichever agent directories exist.
+`hototel install` writes `SKILL.md` into `~/.claude/skills/hototel/` and
+`~/.codex/skills/hototel/` for whichever agent directories exist.
 
 ```bash
-hotusage skill install     # (re)write it, even where no agent dir exists yet
-hotusage skill uninstall   # remove it
+hototel skill install     # (re)write it, even where no agent dir exists yet
+hototel skill uninstall   # remove it
 ```
 
 The file is embedded in the binary ([`skill/SKILL.md`](../skill/SKILL.md)) and
@@ -96,13 +96,13 @@ No `.app`, `.deb` or `.exe` installers to maintain, and the binaries are
 unsigned on purpose: `curl` and `tar` do not set the macOS quarantine
 attribute, so Gatekeeper never inspects a binary installed that way. A browser
 download *is* quarantined — clear it with
-`xattr -d com.apple.quarantine hotusage`.
+`xattr -d com.apple.quarantine hototel`.
 
 `install.sh` always takes the latest release; there is no version to choose. It
 verifies the archive against the release's `SHA256SUMS` and refuses to install
 on a mismatch.
 
-### `hotusage update`
+### `hototel update`
 
 A version check plus a delegation: it compares this build against the latest
 GitHub release and, when there is a newer one, runs the same installer. It is
@@ -124,7 +124,7 @@ command would then refuse.
 
 ## Configuration
 
-First run writes `~/.hotusage/collector.json`:
+First run writes `~/.hototel/collector.json`:
 
 ```json
 {
@@ -138,21 +138,21 @@ First run writes `~/.hotusage/collector.json`:
 
 `scopes` records what the server granted. Empty or missing means a token minted
 before scopes existed: it reports usage but cannot read it, which is why
-`hotusage summary` asks such a machine to sign in again.
+`hototel summary` asks such a machine to sign in again.
 
 Sync state (per-session fingerprints, so only changed sessions are re-sent)
-lives in `~/.hotusage/collector-state.json`. The filenames predate the rename
+lives in `~/.hototel/collector-state.json`. The filenames predate the rename
 from `hotusage-collector` and are kept so deployed machines keep their sign-in.
 
 ## Security
 
-- `~/.hotusage/` is created `0700`; both files are written `0600`. The config
+- `~/.hototel/` is created `0700`; both files are written `0600`. The config
   holds a bearer token.
 - Only `https://` servers are accepted (loopback excepted for local dev), and
   redirects are refused rather than followed — a redirected POST arrives as a
   GET, which once let uploads be silently discarded.
 - An upload counts as delivered only when the server acknowledges it. A 2xx
-  from something that is not the hotusage API does not.
+  from something that is not the hototel API does not.
 - Helper binaries (`hostname`, `git`, `launchctl`, `open`, `reg`, …) run with a
   fixed system `PATH`, so a writable directory on the user's `PATH` cannot
   hijack a process that runs at login holding a token.
@@ -196,10 +196,10 @@ The server stamps `user_email`/`hostname` onto stored rows and upserts by
 ## Reading the organization back
 
 ```bash
-hotusage summary | chart | users | projects | providers | models | daily
-hotusage sessions [--user X] [--project Y] [--provider claude|codex|opencode]
-hotusage session <id>
-hotusage raw
+hototel summary | chart | users | projects | providers | models | daily
+hototel sessions [--user X] [--project Y] [--provider claude|codex|opencode]
+hototel session <id>
+hototel raw
 ```
 
 All take `--days 7|30|90|all` (default 30) and `--fresh`. A `--days` value the

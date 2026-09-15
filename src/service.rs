@@ -1,19 +1,19 @@
-//! `install` / `uninstall`: register hotusage as a continuously running
+//! `install` / `uninstall`: register hototel as a continuously running
 //! background agent using each platform's native mechanism.
 //!
-//!   macOS    LaunchAgent (~/Library/LaunchAgents/dev.hotdata.hotusage.plist)
+//!   macOS    LaunchAgent (~/Library/LaunchAgents/dev.hotdata.hototel.plist)
 //!            -> runs the menu bar app at login, kept alive
-//!   Linux    systemd user unit (~/.config/systemd/user/hotusage.service)
+//!   Linux    systemd user unit (~/.config/systemd/user/hototel.service)
 //!            -> runs `daemon` (headless; no desktop indicator on Linux)
 //!   Windows  HKCU Run key -> starts the tray app at login (a session app, not a
 //!            Windows Service, because services cannot show a tray icon)
 //!
-//! These names changed when `hotusage-collector` became `hotusage`. A
-//! registration under the old name points at a binary the new installer has
-//! replaced or removed, and two registrations would mean two daemons syncing
-//! the same machine -- so every install and uninstall sweeps the old one away
-//! first. `remove_legacy` is best-effort throughout: a machine that never had
-//! the old name must not fail to install because of it.
+//! These names have changed twice (`hotusage-collector` -> `hotusage` ->
+//! `hototel`). A registration under an old name points at a binary the new
+//! installer has replaced or removed, and two registrations would mean two
+//! daemons syncing the same machine -- so every install and uninstall sweeps
+//! all the old ones away first. `remove_legacy` is best-effort throughout: a
+//! machine that never had an old name must not fail to install because of it.
 
 use std::fs;
 use std::path::PathBuf;
@@ -22,19 +22,19 @@ use std::process::Command;
 // Each platform registers under exactly one of these, so the others would be
 // dead code there; cfg keeps the build warning-free without allow(dead_code).
 #[cfg(target_os = "macos")]
-const LABEL: &str = "dev.hotdata.hotusage";
+const LABEL: &str = "dev.hotdata.hototel";
 #[cfg(target_os = "macos")]
-const LEGACY_LABEL: &str = "dev.hotdata.hotusage-collector";
+const LEGACY_LABELS: [&str; 2] = ["dev.hotdata.hotusage", "dev.hotdata.hotusage-collector"];
 
 #[cfg(target_os = "linux")]
-const UNIT: &str = "hotusage";
+const UNIT: &str = "hototel";
 #[cfg(target_os = "linux")]
-const LEGACY_UNIT: &str = "hotusage-collector";
+const LEGACY_UNITS: [&str; 2] = ["hotusage", "hotusage-collector"];
 
 #[cfg(target_os = "windows")]
-const RUN_VALUE: &str = "hotusage";
+const RUN_VALUE: &str = "hototel";
 #[cfg(target_os = "windows")]
-const LEGACY_RUN_VALUE: &str = "hotusage-collector";
+const LEGACY_RUN_VALUES: [&str; 2] = ["hotusage", "hotusage-collector"];
 
 /// A `Command` that cannot be hijacked by a writable directory on `PATH`.
 /// This process runs at login and holds a bearer token, so every helper it
@@ -83,31 +83,36 @@ pub fn open_browser(url: &str) {
     let _ = safe_command("cmd").args(["/C", "start", "", url]).spawn();
 }
 
-/// Retire any registration left by the `hotusage-collector` name. Best effort:
-/// nothing here may fail an install, because a machine that never ran the old
-/// name has nothing to clean and must not be punished for it.
+/// Retire any registration left by the `hotusage` or `hotusage-collector`
+/// names. Best effort: nothing here may fail an install, because a machine
+/// that never ran an old name has nothing to clean and must not be punished
+/// for it.
 #[cfg(target_os = "macos")]
 fn remove_legacy() {
-    let path =
-        crate::parsers::home_dir().join(format!("Library/LaunchAgents/{LEGACY_LABEL}.plist"));
-    if path.is_file() {
-        if let Some(p) = path.to_str() {
-            let _ = run("launchctl", &["unload", p]);
+    for label in LEGACY_LABELS {
+        let path =
+            crate::parsers::home_dir().join(format!("Library/LaunchAgents/{label}.plist"));
+        if path.is_file() {
+            if let Some(p) = path.to_str() {
+                let _ = run("launchctl", &["unload", p]);
+            }
+            let _ = fs::remove_file(&path);
+            println!("hototel: removed the old LaunchAgent {label}");
         }
-        let _ = fs::remove_file(&path);
-        println!("hotusage: removed the old LaunchAgent {LEGACY_LABEL}");
     }
 }
 
 #[cfg(target_os = "linux")]
 fn remove_legacy() {
-    let path = crate::parsers::home_dir()
-        .join(format!(".config/systemd/user/{LEGACY_UNIT}.service"));
-    if path.is_file() {
-        let _ = run("systemctl", &["--user", "disable", "--now", LEGACY_UNIT]);
-        let _ = fs::remove_file(&path);
-        let _ = run("systemctl", &["--user", "daemon-reload"]);
-        println!("hotusage: removed the old systemd unit {LEGACY_UNIT}.service");
+    for unit in LEGACY_UNITS {
+        let path = crate::parsers::home_dir()
+            .join(format!(".config/systemd/user/{unit}.service"));
+        if path.is_file() {
+            let _ = run("systemctl", &["--user", "disable", "--now", unit]);
+            let _ = fs::remove_file(&path);
+            let _ = run("systemctl", &["--user", "daemon-reload"]);
+            println!("hototel: removed the old systemd unit {unit}.service");
+        }
     }
 }
 
@@ -115,16 +120,18 @@ fn remove_legacy() {
 fn remove_legacy() {
     // `reg delete` fails when the value is absent, which is the common case;
     // the result is deliberately ignored rather than reported
-    let _ = run(
-        "reg",
-        &[
-            "delete",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-            "/v",
-            LEGACY_RUN_VALUE,
-            "/f",
-        ],
-    );
+    for value in LEGACY_RUN_VALUES {
+        let _ = run(
+            "reg",
+            &[
+                "delete",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                value,
+                "/f",
+            ],
+        );
+    }
 }
 
 /// `launchctl` takes the plist path as a command-line argument, which has to be
@@ -150,7 +157,7 @@ pub fn install() -> Result<String, String> {
     // name the signed-in address, so keep them in the user's own log dir
     let logs = crate::parsers::home_dir().join("Library/Logs");
     fs::create_dir_all(&logs).map_err(|e| e.to_string())?;
-    let log = logs.join("hotusage.log");
+    let log = logs.join("hototel.log");
     let log = log.display();
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -200,7 +207,7 @@ pub fn install() -> Result<String, String> {
     let exe = exe()?;
     let unit = format!(
         "[Unit]\n\
-         Description=hotusage (AI coding-agent usage)\n\n\
+         Description=hototel (AI coding-agent usage)\n\n\
          [Service]\n\
          ExecStart={} daemon\n\
          Restart=always\n\

@@ -1,24 +1,24 @@
-//! hotusage — usage analytics for AI coding agents.
+//! hototel — usage analytics for AI coding agents.
 //!
 //! Two jobs, one binary. It parses this machine's Claude Code / Codex /
-//! OpenCode history and sends changed sessions to the hotusage server; and it
+//! OpenCode history and sends changed sessions to the hototel server; and it
 //! reads the organization's usage back, which is what the installed agent skill
 //! calls to answer questions. One sign-in covers both.
 //!
-//!   hotusage                  macOS/Windows: tray app; Linux: headless daemon
-//!   hotusage install          register as a login service + install the skill
-//!   hotusage uninstall        undo that
-//!   hotusage signin           sign in through the browser (--force to re-authorize)
-//!   hotusage signout          revoke this machine's token and forget it
-//!   hotusage whoami           who this machine is signed in as, and what it may do
-//!   hotusage version          which build this is, and where it lives
-//!   hotusage update           install the latest release (--check only reports)
-//!   hotusage sync             sync now, then exit
-//!   hotusage daemon           headless sync loop (any OS)
-//!   hotusage dump             print parsed sessions as JSON (debug)
-//!   hotusage skill install    (re)write the agent skill file
+//!   hototel                  macOS/Windows: tray app; Linux: headless daemon
+//!   hototel install          register as a login service + install the skill
+//!   hototel uninstall        undo that
+//!   hototel signin           sign in through the browser (--force to re-authorize)
+//!   hototel signout          revoke this machine's token and forget it
+//!   hototel whoami           who this machine is signed in as, and what it may do
+//!   hototel version          which build this is, and where it lives
+//!   hototel update           install the latest release (--check only reports)
+//!   hototel sync             sync now, then exit
+//!   hototel daemon           headless sync loop (any OS)
+//!   hototel dump             print parsed sessions as JSON (debug)
+//!   hototel skill install    (re)write the agent skill file
 //!
-//!   hotusage summary | users | projects | providers | models | daily | chart
+//!   hototel summary | users | projects | providers | models | daily | chart
 //!            | sessions | session <id> | raw        read the org's usage
 //!
 //! Desktop indicator exists on macOS (top menu bar) and Windows (taskbar tray)
@@ -51,7 +51,7 @@ fn attach_console() {
 
 /// Print a whole report to stdout, treating a closed pipe as success.
 ///
-/// `hotusage raw | head` is a normal thing to do, and Rust's `println!` panics
+/// `hototel raw | head` is a normal thing to do, and Rust's `println!` panics
 /// when the reader goes away -- a panic message in the middle of an agent's
 /// output looks like a real failure. Downstream closing early is not an error
 /// of this program's.
@@ -67,7 +67,7 @@ fn print_out(text: &str) -> ! {
         Ok(()) => std::process::exit(0),
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
         Err(e) => {
-            eprintln!("hotusage: cannot write output: {e}");
+            eprintln!("hototel: cannot write output: {e}");
             std::process::exit(1);
         }
     }
@@ -75,14 +75,14 @@ fn print_out(text: &str) -> ! {
 
 fn run_once() -> ! {
     let config = sync::load_config();
-    println!("hotusage: {} -> {}", config.user_email, config.server_url);
+    println!("hototel: {} -> {}", config.user_email, config.server_url);
     match sync::sync(&config) {
         Ok(msg) => {
-            println!("hotusage: {msg}");
+            println!("hototel: {msg}");
             std::process::exit(0);
         }
         Err(msg) => {
-            eprintln!("hotusage: {msg}");
+            eprintln!("hototel: {msg}");
             std::process::exit(1);
         }
     }
@@ -116,8 +116,8 @@ fn run_signin(force: bool) -> ! {
     // token reports usage but cannot read it, so the skill silently fails; that
     // is worth one approval rather than a confusing half-working install.
     if sync::is_signed_in() && !force && cfg.has_scope("read") {
-        println!("hotusage: already signed in as {}", cfg.user_email);
-        println!("hotusage: run `signout` first to switch accounts");
+        println!("hototel: already signed in as {}", cfg.user_email);
+        println!("hototel: run `signout` first to switch accounts");
         std::process::exit(0);
     }
     if sync::is_signed_in() {
@@ -127,7 +127,7 @@ fn run_signin(force: bool) -> ! {
             "this machine's access does not yet cover reading your \
              organization's usage"
         };
-        println!("hotusage: re-authorizing {} ({why})", cfg.user_email);
+        println!("hototel: re-authorizing {} ({why})", cfg.user_email);
     }
     // captured before signin_wait overwrites it, so the credential being
     // replaced can be revoked rather than left live and unheld
@@ -136,7 +136,7 @@ fn run_signin(force: bool) -> ! {
     let s = match sync::signin_start(&server) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("hotusage: {e}");
+            eprintln!("hototel: {e}");
             std::process::exit(1);
         }
     };
@@ -159,9 +159,9 @@ fn run_signin(force: bool) -> ! {
                 // best effort: the new credential works either way, and a stale
                 // one the admin page still lists is better than a failed sign-in
                 match sync::revoke_token(&server, &previous) {
-                    Ok(()) => println!("hotusage: revoked this machine's previous access"),
+                    Ok(()) => println!("hototel: revoked this machine's previous access"),
                     Err(e) => eprintln!(
-                        "hotusage: could not revoke the previous token ({e}); \
+                        "hototel: could not revoke the previous token ({e}); \
                          revoke it from the dashboard's Organization page"
                     ),
                 }
@@ -169,19 +169,19 @@ fn run_signin(force: bool) -> ! {
             if !now.has_scope("read") {
                 // worth saying plainly: the sync half works, the skill will not
                 println!(
-                    "hotusage: this server does not grant read access, so the \
+                    "hototel: this server does not grant read access, so the \
                      skill cannot answer questions about usage (the server needs \
                      updating). Reporting usage works as normal."
                 );
             }
             // first data should land now, not in fifteen minutes
             match sync::sync(&sync::load_config()) {
-                Ok(msg) => println!("hotusage: {msg}"),
-                Err(msg) => eprintln!("hotusage: first sync failed: {msg}"),
+                Ok(msg) => println!("hototel: {msg}"),
+                Err(msg) => eprintln!("hototel: first sync failed: {msg}"),
             }
         }
         Err(e) => {
-            eprintln!("hotusage: {e}");
+            eprintln!("hototel: {e}");
             std::process::exit(1);
         }
     }
@@ -191,9 +191,9 @@ fn run_signin(force: bool) -> ! {
 /// Headless counterpart to the menu's Sign Out.
 fn run_signout() -> ! {
     match sync::signout() {
-        Ok(msg) => println!("hotusage: {}", msg.to_lowercase()),
+        Ok(msg) => println!("hototel: {}", msg.to_lowercase()),
         Err(e) => {
-            eprintln!("hotusage: {e}");
+            eprintln!("hototel: {e}");
             std::process::exit(1);
         }
     }
@@ -207,7 +207,7 @@ fn run_signout() -> ! {
 /// itself, and cost real time the first time a release raced an install.
 fn run_version() -> ! {
     print_out(&format!(
-        "hotusage {} ({})",
+        "hototel {} ({})",
         env!("CARGO_PKG_VERSION"),
         std::env::current_exe()
             .map(|p| p.display().to_string())
@@ -218,16 +218,16 @@ fn run_version() -> ! {
 fn run_whoami() -> ! {
     let cfg = sync::load_config();
     if cfg.token.trim().is_empty() {
-        println!("hotusage: not signed in - run `hotusage signin`");
+        println!("hototel: not signed in - run `hototel signin`");
         std::process::exit(2);
     }
     let can = if cfg.has_scope("read") {
         "reports usage and reads this organization's usage"
     } else {
-        "reports usage only (run `hotusage signin --force` to add read access)"
+        "reports usage only (run `hototel signin --force` to add read access)"
     };
     println!(
-        "{} at {}\n  {can}\n  hotusage {}",
+        "{} at {}\n  {can}\n  hototel {}",
         cfg.user_email,
         cfg.server_url,
         env!("CARGO_PKG_VERSION")
@@ -240,7 +240,7 @@ fn run_usage(cmd: &str, rest: &[String]) -> ! {
     let opts = match usage::parse_opts(rest) {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("hotusage: {e}");
+            eprintln!("hototel: {e}");
             std::process::exit(2);
         }
     };
@@ -249,7 +249,7 @@ fn run_usage(cmd: &str, rest: &[String]) -> ! {
     // the whole org and looked like it had honoured the id.
     if cmd != "session" {
         if let Some(extra) = &opts.id {
-            eprintln!("hotusage: '{cmd}' takes no argument (got '{extra}')");
+            eprintln!("hototel: '{cmd}' takes no argument (got '{extra}')");
             std::process::exit(2);
         }
     }
@@ -257,7 +257,7 @@ fn run_usage(cmd: &str, rest: &[String]) -> ! {
     // ones it does not honour were dropped on the floor. `daily --user zac`
     // answered with the whole organization's totals.
     if let Err(e) = usage::check_options(cmd, &opts) {
-        eprintln!("hotusage: {e}");
+        eprintln!("hototel: {e}");
         std::process::exit(2);
     }
     let out = match cmd {
@@ -276,7 +276,7 @@ fn run_usage(cmd: &str, rest: &[String]) -> ! {
     match out {
         Ok(text) => print_out(&text),
         Err(e) => {
-            eprintln!("hotusage: {e}");
+            eprintln!("hototel: {e}");
             std::process::exit(1);
         }
     }
@@ -289,20 +289,20 @@ fn run_skill(rest: &[String]) -> ! {
             // not exist yet, which is what makes this different from the
             // opportunistic pass during `install`
             for line in skill::install(true) {
-                println!("hotusage: {line}");
+                println!("hototel: {line}");
             }
         }
         "uninstall" => {
             let done = skill::uninstall();
             if done.is_empty() {
-                println!("hotusage: no skill was installed");
+                println!("hototel: no skill was installed");
             }
             for line in done {
-                println!("hotusage: {line}");
+                println!("hototel: {line}");
             }
         }
         other => {
-            eprintln!("hotusage: unknown skill command '{other}' (install, uninstall)");
+            eprintln!("hototel: unknown skill command '{other}' (install, uninstall)");
             std::process::exit(2);
         }
     }
@@ -312,7 +312,7 @@ fn run_skill(rest: &[String]) -> ! {
 fn run_daemon() -> ! {
     let config = sync::load_config();
     println!(
-        "hotusage daemon: {} -> {} (every {}m)",
+        "hototel daemon: {} -> {} (every {}m)",
         config.user_email, config.server_url, config.interval_minutes
     );
     loop {
@@ -338,28 +338,28 @@ fn main() {
     match arg.as_str() {
         "install" => {
             match service::install() {
-                Ok(msg) => println!("hotusage: {msg}"),
+                Ok(msg) => println!("hototel: {msg}"),
                 Err(msg) => {
-                    eprintln!("hotusage: install failed: {msg}");
+                    eprintln!("hototel: install failed: {msg}");
                     std::process::exit(1);
                 }
             }
             // one download installs both halves; silent when neither agent is
             // present, because someone who uses neither did not ask for this
             for line in skill::install(false) {
-                println!("hotusage: {line}");
+                println!("hototel: {line}");
             }
         }
         "uninstall" => {
             match service::uninstall() {
-                Ok(msg) => println!("hotusage: {msg}"),
+                Ok(msg) => println!("hototel: {msg}"),
                 Err(msg) => {
-                    eprintln!("hotusage: uninstall failed: {msg}");
+                    eprintln!("hototel: uninstall failed: {msg}");
                     std::process::exit(1);
                 }
             }
             for line in skill::uninstall() {
-                println!("hotusage: {line}");
+                println!("hototel: {line}");
             }
         }
         "signin" => run_signin(flag("--force")),
@@ -391,13 +391,13 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    /// install.sh parses `hotusage version` to prove the binary on disk is the
+    /// install.sh parses `hototel version` to prove the binary on disk is the
     /// build it just downloaded, with `awk '{print $2}'`. That contract is easy
     /// to break by reformatting this line, and breaking it silently re-opens
     /// the stale-install hole the command exists to close.
     #[test]
     fn the_version_line_stays_parseable_by_the_installer() {
-        let line = format!("hotusage {} (/some/path)", env!("CARGO_PKG_VERSION"));
+        let line = format!("hototel {} (/some/path)", env!("CARGO_PKG_VERSION"));
         let second = line.split_whitespace().nth(1).expect("no second field");
         assert_eq!(second, env!("CARGO_PKG_VERSION"));
         // and it is a bare version, not "v1.2.3" -- install.sh compares it to
@@ -408,35 +408,35 @@ mod tests {
 }
 
 const USAGE: &str = "\
-hotusage — usage analytics for AI coding agents
+hototel — usage analytics for AI coding agents
 
-  hotusage                   run in the background (tray on macOS/Windows)
-  hotusage install           register as a login service + install the agent skill
-  hotusage uninstall         undo that
-  hotusage signin [--force]  sign in through the browser
-  hotusage signout           revoke this machine's token
-  hotusage whoami            who this machine is signed in as, and what it may do
-  hotusage version           which build this is, and where it lives
-  hotusage update            install the latest release if there is one
+  hototel                   run in the background (tray on macOS/Windows)
+  hototel install           register as a login service + install the agent skill
+  hototel uninstall         undo that
+  hototel signin [--force]  sign in through the browser
+  hototel signout           revoke this machine's token
+  hototel whoami            who this machine is signed in as, and what it may do
+  hototel version           which build this is, and where it lives
+  hototel update            install the latest release if there is one
                              --check reports only (exit 10 = stale)
                              --force reinstalls even when already current
-  hotusage sync              sync now, then exit
-  hotusage daemon            headless sync loop
-  hotusage dump              print parsed sessions as JSON (debug)
-  hotusage skill install     (re)write the agent skill file
+  hototel sync              sync now, then exit
+  hototel daemon            headless sync loop
+  hototel dump              print parsed sessions as JSON (debug)
+  hototel skill install     (re)write the agent skill file
 
 read your organization's usage (needs read access; `signin` grants it):
 
-  hotusage summary           totals, top people and projects, recent trend
-  hotusage users             per-person breakdown
-  hotusage projects          per-project breakdown
-  hotusage providers         per-tool breakdown
-  hotusage models            which models are being used
-  hotusage daily             day-by-day tokens and cost
-  hotusage chart             the same series as a stacked bar chart
-  hotusage sessions          individual sessions (--user/--project/--provider)
-  hotusage session <id>      one session, request by request
-  hotusage raw               the whole payload as JSON
+  hototel summary           totals, top people and projects, recent trend
+  hototel users             per-person breakdown
+  hototel projects          per-project breakdown
+  hototel providers         per-tool breakdown
+  hototel models            which models are being used
+  hototel daily             day-by-day tokens and cost
+  hototel chart             the same series as a stacked bar chart
+  hototel sessions          individual sessions (--user/--project/--provider)
+  hototel session <id>      one session, request by request
+  hototel raw               the whole payload as JSON
 
   options: --days 7|30|90|all  --fresh       every command
            --limit N                         users, projects, sessions, session

@@ -1,8 +1,8 @@
 //! Installing the agent skill.
 //!
-//! The skill is one Markdown file telling a coding agent which `hotusage`
+//! The skill is one Markdown file telling a coding agent which `hototel`
 //! subcommands answer which questions. It ships inside this binary rather than
-//! as a separate download, so installing hotusage installs the skill too --
+//! as a separate download, so installing hototel installs the skill too --
 //! that is the whole point of there being one thing to install.
 //!
 //! The binary's own path is substituted in, because `~/.local/bin` is often
@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const TEMPLATE: &str = include_str!("../skill/SKILL.md");
-const NAME: &str = "hotusage";
+const NAME: &str = "hototel";
 
 /// Where each agent keeps its skills, and what to call it in a message.
 fn targets() -> Vec<(&'static str, PathBuf)> {
@@ -27,7 +27,7 @@ fn targets() -> Vec<(&'static str, PathBuf)> {
 /// The command the skill file tells the agent to run.
 ///
 /// Quoted when the path contains whitespace: SKILL.md uses it bare in fenced
-/// code blocks, and `C:\Users\Jane Doe\...\hotusage summary` would otherwise be
+/// code blocks, and `C:\Users\Jane Doe\...\hototel summary` would otherwise be
 /// two words -- "command not found" for every documented invocation.
 fn quote_if_spaced(path: &str) -> String {
     if path.chars().any(char::is_whitespace) {
@@ -49,7 +49,7 @@ fn binary_path() -> String {
 
 /// Present in every file this program writes, so uninstall can tell its own
 /// file from one somebody hand-wrote under the same name.
-const MARKER: &str = "<!-- installed by hotusage; local edits are overwritten -->";
+const MARKER: &str = "<!-- installed by hototel; local edits are overwritten -->";
 
 fn rendered() -> String {
     // CRLF is normalized away, not tolerated: on Windows git checks this file
@@ -64,6 +64,25 @@ fn is_ours(path: &Path) -> bool {
     fs::read_to_string(path)
         .map(|s| s.contains(MARKER))
         .unwrap_or(false)
+}
+
+/// The skill was installed under the old binary name (with the old marker)
+/// before the hototel rename. Two skills answering the same questions would
+/// race each other in the agent's skill listing, so retire the old one.
+/// Best-effort, and only for a file the old binary wrote.
+const LEGACY_NAME: &str = "hotusage";
+const LEGACY_MARKER: &str = "<!-- installed by hotusage;";
+
+fn remove_legacy(root: &Path) {
+    let dir = root.join("skills").join(LEGACY_NAME);
+    let path = dir.join("SKILL.md");
+    let is_legacy_ours = fs::read_to_string(&path)
+        .map(|s| s.contains(LEGACY_MARKER))
+        .unwrap_or(false);
+    if is_legacy_ours {
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir); // only when empty; siblings are not ours
+    }
 }
 
 fn write_skill(root: &Path) -> std::io::Result<PathBuf> {
@@ -86,6 +105,7 @@ pub fn install(force: bool) -> Vec<String> {
         if !root.is_dir() && !force {
             continue;
         }
+        remove_legacy(&root);
         // Someone else's skill under this name is theirs, not ours to replace.
         // `skill install`, which is asked for by name, may still overwrite --
         // that is how an edited copy is reset.
@@ -93,7 +113,7 @@ pub fn install(force: bool) -> Vec<String> {
         if existing.is_file() && !is_ours(&existing) && !force {
             done.push(format!(
                 "left the existing {label} skill at {} alone (not written by \
-                 hotusage); run `hotusage skill install` to replace it",
+                 hototel); run `hototel skill install` to replace it",
                 existing.display()
             ));
             continue;
@@ -121,7 +141,7 @@ pub fn uninstall() -> Vec<String> {
         }
         if !is_ours(&path) {
             done.push(format!(
-                "left {} alone (not written by hotusage)",
+                "left {} alone (not written by hototel)",
                 path.display()
             ));
             continue;
@@ -151,7 +171,7 @@ mod tests {
         // the rendered output. Frontmatter is what makes a skill load at all.
         let out = rendered();
         assert!(out.starts_with("---\n"), "needs YAML frontmatter");
-        assert!(out.contains("\nname: hotusage\n"));
+        assert!(out.contains("\nname: hototel\n"));
         assert!(out.contains("\ndescription: "));
         assert!(!out.contains('\r'), "CRLF must not reach the agent");
         assert!(TEMPLATE.contains("{{BIN}}"), "nothing to substitute");
@@ -184,12 +204,12 @@ mod tests {
 
     #[test]
     fn writing_creates_the_nested_skill_directory() {
-        let root = std::env::temp_dir().join(format!("hotusage-skill-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("hototel-skill-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let path = write_skill(&root).expect("write");
-        assert!(path.ends_with("skills/hotusage/SKILL.md"), "{path:?}");
+        assert!(path.ends_with("skills/hototel/SKILL.md"), "{path:?}");
         let body = fs::read_to_string(&path).unwrap();
-        assert!(body.contains("name: hotusage"));
+        assert!(body.contains("name: hototel"));
         assert!(!body.contains("{{BIN}}"));
         // re-installing must overwrite rather than fail: that is the upgrade
         write_skill(&root).expect("overwrite");
@@ -200,10 +220,10 @@ mod tests {
     fn a_path_with_a_space_is_quoted() {
         // the path is substituted into fenced code blocks; unquoted, a home
         // directory with a space makes every documented command fail
-        assert_eq!(quote_if_spaced("/opt/hotusage"), "/opt/hotusage");
+        assert_eq!(quote_if_spaced("/opt/hototel"), "/opt/hototel");
         assert_eq!(
-            quote_if_spaced("/Users/Jane Doe/bin/hotusage"),
-            "\"/Users/Jane Doe/bin/hotusage\""
+            quote_if_spaced("/Users/Jane Doe/bin/hototel"),
+            "\"/Users/Jane Doe/bin/hototel\""
         );
     }
 
@@ -223,7 +243,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("SKILL.md");
-        fs::write(&path, "---\nname: hotusage\n---\nsomeone's own skill").unwrap();
+        fs::write(&path, "---\nname: hototel\n---\nsomeone's own skill").unwrap();
         assert!(!is_ours(&path), "a hand-written file must not look like ours");
 
         // a sibling file belongs to whoever put it there; remove_dir_all,
