@@ -1,11 +1,11 @@
 ---
-name: hotusage
-description: Answer questions about the organization's AI coding-agent usage — how much Claude Code, Codex, or OpenCode is being used, by whom, on which projects, what it costs, and how that is trending. Use for "our usage", "how much are we spending on Claude", "who used the most tokens", "usage by project", "what did we spend last week", "is anyone still on Opus", or any mention of hotusage. Requires a one-time sign-in that grants read-only access to the signed-in person's organization.
+name: hototel
+description: Answer questions about the organization's AI coding-agent usage — how much Claude Code, Codex, or OpenCode is being used, by whom, on which projects, what it costs, and how that is trending. Use for "our usage", "how much are we spending on Claude", "who used the most tokens", "usage by project", "what did we spend last week", "is anyone still on Opus", or any mention of hototel. Requires a one-time sign-in that grants read-only access to the signed-in person's organization.
 ---
 
-# hotusage
+# hototel
 
-Queries the usage your team's hotusage clients have already reported: one row
+Queries the usage your team's hototel clients have already reported: one row
 per coding session, with tokens, cost, project, tool and model. The data covers
 **your organization only** — the account this machine signed in as.
 
@@ -23,7 +23,7 @@ not read it, tell the user to run:
 ```
 
 It prints a URL and a short code; they approve it in the browser while signed in
-to hotusage. **Run it in the foreground and let the user act** — it waits for a
+to hototel. **Run it in the foreground and let the user act** — it waits for a
 human to approve and cannot be completed on their behalf. If they are already
 signed in but lack read access (an older install), the command to use is
 `{{BIN}} signin --force`.
@@ -109,7 +109,7 @@ input tokens. When comparing people or projects, cost is the fairer measure;
 raw token totals mostly measure how long their sessions ran.
 
 **Absence is ambiguous.** Someone with no rows may not use these tools, or may
-simply not have hotusage installed. Say which you know — you cannot tell them
+simply not have hototel installed. Say which you know — you cannot tell them
 apart from here.
 
 ## Interpreting the data
@@ -131,7 +131,7 @@ apart from here.
 
 ## Privacy
 
-What hotusage uploads, in full:
+What hototel uploads, in full:
 
 - derived numbers — token counts, costs, request and session counts, timings,
   peak context;
@@ -140,7 +140,7 @@ What hotusage uploads, in full:
 - a session title.
 
 **A session title is not always the agent's own summary.** Claude Code and Codex
-record one when they have written one; when they have not, hotusage falls back
+record one when they have written one; when they have not, hototel falls back
 to **the first line of the session's first prompt, truncated to about 80
 characters**. Titles are therefore sometimes verbatim prompt text. Neither the
 `sessions` table nor `session <id>` prints one — they show the project and the

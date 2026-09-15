@@ -538,7 +538,7 @@ mod tests {
     /// parser's project-name fallback (the parent directory) is predictable.
     fn fixture(name: &str, lines: &[&str]) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "hotusage-parse-{}-{name}-{:?}",
+            "hototel-parse-{}-{name}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn a_file_that_cannot_be_opened_is_counted_rather_than_read_as_empty() {
         // the difference between "this machine is idle" and "I could not look"
-        let missing = std::env::temp_dir().join("hotusage-does-not-exist.jsonl");
+        let missing = std::env::temp_dir().join("hototel-does-not-exist.jsonl");
         let mut unreadable = 0;
         assert!(parse_claude_file(&missing, &mut unreadable).is_none());
         assert_eq!(unreadable, 1);
@@ -717,7 +717,7 @@ mod tests {
         // A pasted file makes one JSONL line arbitrarily long, and the line is
         // the parse unit -- so an unbounded read is an out-of-memory kill of a
         // daemon that runs at login, triggered by nothing but a big paste.
-        let dir = std::env::temp_dir().join(format!("hotusage-bigline-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("hototel-bigline-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("big.jsonl");

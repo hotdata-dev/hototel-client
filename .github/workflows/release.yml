@@ -54,11 +54,11 @@ jobs:
           cargo build --release --target aarch64-apple-darwin
           cargo build --release --target x86_64-apple-darwin
           mkdir -p dist
-          lipo -create -output dist/hotusage \
-            target/aarch64-apple-darwin/release/hotusage \
-            target/x86_64-apple-darwin/release/hotusage
-          tar -C dist -czf "dist/hotusage-$V-macos-universal.tar.gz" hotusage
-          rm -f dist/hotusage
+          lipo -create -output dist/hototel \
+            target/aarch64-apple-darwin/release/hototel \
+            target/x86_64-apple-darwin/release/hototel
+          tar -C dist -czf "dist/hototel-$V-macos-universal.tar.gz" hototel
+          rm -f dist/hototel
 
       - name: Build & archive (Linux)
         if: runner.os == 'Linux'
@@ -66,7 +66,7 @@ jobs:
           V="${{ steps.v.outputs.version }}"
           cargo build --release
           mkdir -p dist
-          tar -C target/release -czf "dist/hotusage-$V-linux-x86_64.tar.gz" hotusage
+          tar -C target/release -czf "dist/hototel-$V-linux-x86_64.tar.gz" hototel
 
       - name: Build & archive (Windows)
         if: runner.os == 'Windows'
@@ -75,7 +75,7 @@ jobs:
           $V = "${{ steps.v.outputs.version }}"
           cargo build --release
           New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Path target/release/hotusage.exe -DestinationPath "dist/hotusage-$V-windows-x86_64.zip"
+          Compress-Archive -Path target/release/hototel.exe -DestinationPath "dist/hototel-$V-windows-x86_64.zip"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -105,4 +105,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" --generate-notes \
-            --title "hotusage $GITHUB_REF_NAME"
+            --title "hototel $GITHUB_REF_NAME"

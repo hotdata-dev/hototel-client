@@ -1,5 +1,5 @@
 //! Shared types, pricing, and session building — a 1:1 port of core.py.
-//! The wire row structs serialize to exactly the field names the hotusage
+//! The wire row structs serialize to exactly the field names the hototel
 //! server's /ingest endpoint expects.
 
 use chrono::{DateTime, Local};

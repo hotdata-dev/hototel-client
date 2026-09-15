@@ -5,7 +5,7 @@
 Know what your team's AI coding agents are actually doing — who uses them, on
 which projects, with which models, and what it would cost.
 
-<img src="docs/chart.png" alt="hotusage chart --days 30: a stacked bar chart of daily list-price-equivalent spend, split into output, input, cache write and cache read" width="1020">
+<img src="docs/chart.png" alt="hototel chart --days 30: a stacked bar chart of daily list-price-equivalent spend, split into output, input, cache write and cache read" width="1020">
 
 
 Install one command. It quietly reports this machine's Claude Code, Codex and
@@ -29,7 +29,7 @@ immediately. Nothing to configure.
 
 On Windows, download the `.zip` from the
 [latest release](https://github.com/hotdata-dev/hototel-client/releases),
-put `hotusage.exe` somewhere on your PATH, and run `hotusage install`.
+put `hototel.exe` somewhere on your PATH, and run `hototel install`.
 
 ## Ask your agent
 
@@ -44,18 +44,18 @@ Start a new agent session after installing so it picks the skill up.
 ## Or ask directly
 
 ```bash
-hotusage summary                 # totals, top people and projects, recent trend
-hotusage chart                   # the same, as a bar chart
-hotusage users                   # per-person breakdown
-hotusage projects                # per-project
-hotusage providers               # Claude Code vs Codex vs OpenCode
-hotusage models                  # which models, and who uses each
-hotusage daily                   # day by day
-hotusage sessions --user jane    # individual sessions
+hototel summary                 # totals, top people and projects, recent trend
+hototel chart                   # the same, as a bar chart
+hototel users                   # per-person breakdown
+hototel projects                # per-project
+hototel providers               # Claude Code vs Codex vs OpenCode
+hototel models                  # which models, and who uses each
+hototel daily                   # day by day
+hototel sessions --user jane    # individual sessions
 ```
 
 Add `--days 7`, `--days 90`, or `--days all` to any of them (30 days is the
-default). `hotusage help` lists everything.
+default). `hototel help` lists everything.
 
 **About the dollar figures:** they are API list prices worked out from token
 counts — useful for comparing people, projects and trends, but *not a bill*. If
@@ -68,9 +68,9 @@ Sign-in happens during install. To sign in again later — a new machine, or
 switching accounts:
 
 ```bash
-hotusage signin      # opens your browser; approve the code it shows
-hotusage signout     # this machine stops reporting and reading
-hotusage whoami      # who this machine is signed in as
+hototel signin      # opens your browser; approve the code it shows
+hototel signout     # this machine stops reporting and reading
+hototel whoami      # who this machine is signed in as
 ```
 
 Each machine holds its own credential, so signing one out leaves the others
@@ -79,13 +79,13 @@ alone. An admin can also revoke any machine from the dashboard.
 ## Staying up to date
 
 ```bash
-hotusage update           # install the latest release, if there is one
-hotusage update --check   # just tell me whether I'm behind
+hototel update           # install the latest release, if there is one
+hototel update --check   # just tell me whether I'm behind
 ```
 
 ## What gets sent
 
-**Your prompts and code never leave your machine.** hotusage reads the
+**Your prompts and code never leave your machine.** hototel reads the
 transcript files your coding agent already writes, extracts numbers from them,
 and sends only those numbers — token counts, timings, costs, model names, and
 the project directory a session ran in.
@@ -111,26 +111,26 @@ counts, so there is nothing to read for them.
 ## Uninstalling
 
 ```bash
-hotusage uninstall    # stops the background agent and removes the skill
+hototel uninstall    # stops the background agent and removes the skill
 ```
 
-That leaves the binary itself; delete it from wherever `hotusage version` says
+That leaves the binary itself; delete it from wherever `hototel version` says
 it lives. Your already-reported usage stays in your organization's dashboard.
 
 ## Troubleshooting
 
 | Symptom | What to do |
 |---|---|
-| `not signed in` | `hotusage signin` |
-| "can report usage but not read it" | `hotusage signin --force` — an older sign-in, before read access existed |
-| Nothing appearing in the dashboard | `hotusage sync` to run one now and see the error |
-| Unsure which build you have | `hotusage version` — prints the version and its path |
+| `not signed in` | `hototel signin` |
+| "can report usage but not read it" | `hototel signin --force` — an older sign-in, before read access existed |
+| Nothing appearing in the dashboard | `hototel sync` to run one now and see the error |
+| Unsure which build you have | `hototel version` — prints the version and its path |
 
-Upgrading from the old `hotusage-collector`? The installer removes it and
+Upgrading from the old `hotusage` (or the older `hotusage-collector`)? The installer removes it and
 retires its background service, so you will not end up with two running. Run
-`hotusage signin --force` once afterwards to grant read access for the skill.
+`hototel signin --force` once afterwards to grant read access for the skill.
 
 ---
 
-Running your own server, or working on hotusage itself?
+Running your own server, or working on hototel itself?
 See [`docs/internals.md`](docs/internals.md).

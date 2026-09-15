@@ -382,13 +382,13 @@ pub fn is_signed_in() -> bool {
 /// rule and the no-redirect agent have exactly one home.
 pub fn api_get(cfg: &Config, path: &str, timeout: u64) -> Result<serde_json::Value, String> {
     if cfg.token.trim().is_empty() {
-        return Err("not signed in - run `hotusage signin`".into());
+        return Err("not signed in - run `hototel signin`".into());
     }
     if !cfg.has_scope("read") {
         // the token works, it just was not granted this; say what to do rather
         // than letting the server answer with a bare 401
         return Err("this machine is signed in to report usage but not to read it - \
-                    run `hotusage signin --force` to grant read access"
+                    run `hototel signin --force` to grant read access"
             .into());
     }
     require_secure(&cfg.server_url)?;
@@ -403,7 +403,7 @@ pub fn api_get(cfg: &Config, path: &str, timeout: u64) -> Result<serde_json::Val
             .read_json()
             .map_err(|e| format!("unreadable response from the server: {e}")),
         Err(ureq::Error::StatusCode(401)) => Err("this machine's access was revoked - \
-                                                  run `hotusage signin` again"
+                                                  run `hototel signin` again"
             .into()),
         Err(ureq::Error::StatusCode(403)) => {
             Err("this machine is not allowed to read that".into())
@@ -481,7 +481,7 @@ pub fn sync(config: &Config) -> Result<String, String> {
     // exempt - the server's dev mode accepts tokenless ingest locally).
     if config.token.trim().is_empty() && !is_loopback(&config.server_url) {
         return Err("not signed in: use Sign In... in the menu (or run \
-                    `hotusage signin`)"
+                    `hototel signin`)"
             .to_string());
     }
     require_secure(&config.server_url)?;
@@ -533,7 +533,7 @@ pub fn sync(config: &Config) -> Result<String, String> {
                 .body_mut()
                 .read_json()
                 .map_err(|_| "server did not return an ingest response - \
-                              check server_url points at the hotusage API"
+                              check server_url points at the hototel API"
                     .to_string())?;
             if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
                 return Err(format!(

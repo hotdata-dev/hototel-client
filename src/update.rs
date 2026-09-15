@@ -1,4 +1,4 @@
-//! `hotusage update` — check for a newer release, and install it by running
+//! `hototel update` — check for a newer release, and install it by running
 //! the same installer the docs tell people to run.
 //!
 //! Deliberately NOT a self-updater. Replacing a running executable from inside
@@ -42,7 +42,7 @@ fn private_tempdir() -> Result<std::path::PathBuf, String> {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or(attempt);
-        let dir = base.join(format!("hotusage-{}-{nanos}-{attempt}", std::process::id()));
+        let dir = base.join(format!("hototel-{}-{nanos}-{attempt}", std::process::id()));
         match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
             Ok(()) => return Ok(dir),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -99,7 +99,7 @@ pub fn latest_release() -> Result<String, String> {
     let mut resp = agent
         .get(&url)
         // GitHub rejects an API request with no User-Agent
-        .header("User-Agent", "hotusage")
+        .header("User-Agent", "hototel")
         .call()
         .map_err(|e| match e {
             ureq::Error::StatusCode(403) => {
@@ -177,7 +177,7 @@ fn run_installer(tag: &str) -> Result<(), String> {
         scrub();
         return Err("what downloaded is not the installer; nothing was changed".into());
     }
-    println!("hotusage: running the installer...\n");
+    println!("hototel: running the installer...\n");
     // The running binary keeps its own inode when install.sh unlinks the path,
     // so replacing it underneath this process is safe -- this command finishes
     // on the old build and the next invocation is the new one.
@@ -205,39 +205,39 @@ pub fn run(check_only: bool, force: bool) -> i32 {
     let latest = match latest_release() {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("hotusage: {e}");
-            eprintln!("hotusage: installed version is {CURRENT}");
+            eprintln!("hototel: {e}");
+            eprintln!("hototel: installed version is {CURRENT}");
             return 1;
         }
     };
     if parse_version(&latest).is_none() {
         // saying "you are on the latest" when the comparison never happened is
         // the failure this command exists to prevent
-        eprintln!("hotusage: cannot read the latest release tag ({latest})");
-        eprintln!("hotusage: installed version is {CURRENT}");
+        eprintln!("hototel: cannot read the latest release tag ({latest})");
+        eprintln!("hototel: installed version is {CURRENT}");
         return 1;
     }
     let newer = is_newer(CURRENT, &latest);
     if !newer && !force {
         // say which is installed either way: "up to date" alone is the kind of
         // message people stop believing after it is once wrong
-        println!("hotusage {CURRENT} is the latest release ({latest})");
+        println!("hototel {CURRENT} is the latest release ({latest})");
         return 0;
     }
     if newer {
-        println!("hotusage {CURRENT} is installed; {latest} is available");
+        println!("hototel {CURRENT} is installed; {latest} is available");
     } else {
-        println!("hotusage {CURRENT} is current; reinstalling anyway (--force)");
+        println!("hototel {CURRENT} is current; reinstalling anyway (--force)");
     }
     if check_only {
-        println!("hotusage: run `hotusage update` to install it");
+        println!("hototel: run `hototel update` to install it");
         // non-zero so a script or a fleet check can act on "this box is stale"
         return if newer { 10 } else { 0 };
     }
     match run_installer(&latest) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("hotusage: {e}");
+            eprintln!("hototel: {e}");
             1
         }
     }

@@ -82,7 +82,7 @@ fn open_config() {
     let _ = crate::service::safe_command("notepad").arg(&path).spawn();
 }
 
-/// Start `hotusage update` as a process this one does not own.
+/// Start `hototel update` as a process this one does not own.
 ///
 /// The upgrade ends by re-registering the login service: on macOS `launchctl
 /// unload` then `load`, on Linux a systemd user unit restart. Either one kills
@@ -108,7 +108,7 @@ fn spawn_detached_update() -> Result<(), String> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
-    // the running binary by path, never a PATH lookup: `hotusage` on PATH may
+    // the running binary by path, never a PATH lookup: `hototel` on PATH may
     // be a different install, or absent entirely for a tray started by launchd
     let exe = std::env::current_exe().map_err(|e| format!("cannot find own path: {e}"))?;
 
@@ -263,7 +263,7 @@ pub fn run() -> ! {
     }));
 
     // identity poll: cheap config read, so a sign-in performed by
-    // `hotusage signin` shows up in the menu within seconds
+    // `hototel signin` shows up in the menu within seconds
     let id_proxy = event_loop.create_proxy();
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(10));
@@ -344,7 +344,7 @@ pub fn run() -> ! {
                     &dashboard,
                     &edit_cfg,
                     &PredefinedMenuItem::separator(),
-                    &PredefinedMenuItem::quit(Some("Quit hotusage")),
+                    &PredefinedMenuItem::quit(Some("Quit hototel")),
                 ]);
                 auth_id = Some(auth.id().clone());
                 auth_item = Some(auth);
@@ -365,14 +365,14 @@ pub fn run() -> ! {
                 #[cfg(target_os = "macos")]
                 let builder = builder.with_icon(logo_icon()).with_icon_as_template(false);
                 #[cfg(target_os = "windows")]
-                let builder = builder.with_icon(logo_icon()).with_tooltip("hotusage");
+                let builder = builder.with_icon(logo_icon()).with_tooltip("hototel");
                 _tray = Some(builder.build().expect("failed to create tray icon"));
                 let _ = sync_proxy.send_event(UserEvent::SyncRequested);
             }
             Event::UserEvent(UserEvent::Menu(e)) => {
                 if Some(e.id()) == auth_id.as_ref() {
                     // decided from the config at click time, not from the
-                    // label: a `hotusage signin` in a terminal can change the
+                    // label: a `hototel signin` in a terminal can change the
                     // state between the ten-second refresh and this click
                     let _ = sync_proxy.send_event(if sync::is_signed_in() {
                         UserEvent::SignOutRequested
@@ -414,7 +414,7 @@ pub fn run() -> ! {
                             }
                         }
                     }
-                    // Windows has no scripted install -- `hotusage update`
+                    // Windows has no scripted install -- `hototel update`
                     // refuses there -- so the only honest action is the page
                     // the archive is on. The row stays: nothing happened to
                     // this machine, and a second click just reopens the tab.
