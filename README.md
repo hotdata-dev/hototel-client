@@ -1,6 +1,6 @@
 
 
-# <img src="docs/logo.png" alt="" width="25" height="25"> hotusage
+# <img src="docs/logo.png" alt="" width="25" height="25"> hototel
 
 Know what your team's AI coding agents are actually doing — who uses them, on
 which projects, with which models, and what it would cost.
@@ -21,14 +21,14 @@ whole team's:
 macOS and Linux, one line:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hototel-client/main/install.sh | sh
 ```
 
 Your browser opens, you approve the machine, and the first sync runs
 immediately. Nothing to configure.
 
 On Windows, download the `.zip` from the
-[latest release](https://github.com/hotdata-dev/hotusage-client/releases),
+[latest release](https://github.com/hotdata-dev/hototel-client/releases),
 put `hotusage.exe` somewhere on your PATH, and run `hotusage install`.
 
 ## Ask your agent

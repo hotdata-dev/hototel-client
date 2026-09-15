@@ -128,7 +128,7 @@ First run writes `~/.hotusage/collector.json`:
 
 ```json
 {
-  "server_url": "https://www.hotusage.ai",
+  "server_url": "https://hototel.com",
   "token": "<written by Sign In>",
   "user_email": "you@company.com",
   "interval_minutes": 15,
